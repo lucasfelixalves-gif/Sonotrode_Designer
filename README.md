@@ -34,7 +34,7 @@ Before installing Sonotrode Designer, ensure the following are available on your
 
 ### Step 1: Create the Conda Environment
 
-Navigate to the project root directory (where `environment.yml` is located) and run:
+Navigate to the `GUI_code/` directory (where `environment.yml` is located) and run:
 
 ```bash
 mamba env create -f environment.yml
@@ -69,21 +69,22 @@ If any import fails, see the [Troubleshooting](#troubleshooting) section.
 
 ## CCX Verification/Setup (CRITICAL)
 
-The CalculiX solver is required for running FEA simulations. And should be distributed with the rest of the code.
-However if 'bin0' does not exist, follow these steps carefully:
+The CalculiX solver is required for running FEA simulations. It should be distributed with the rest of the code.
+If `bin/` does not exist, follow these steps carefully:
 
 ### Step 1: Create the `bin/` Directory
 
-At the **project root** (the folder containing `scripts/` and `main.py`), create a new folder named `bin/`:
+At the **repository root** (the folder containing `GUI_code/` and `bin/`), create a new folder named `bin/`:
 
 ```
 your_project_root/
 ├── bin/                     ← Create this folder
-├── scripts/
-│   ├── main.py
-│   ├── ccx_solver.py
-│   └── ...
 ├── GUI_code/
+│   ├── environment.yml
+│   └── scripts/
+│       ├── main.py
+│       ├── ccx_solver.py
+│       └── ...
 └── README.md
 ```
 

@@ -71,6 +71,7 @@ This structure keeps presentation concerns in the view, user interaction in cont
 ## 3. Repository Structure
 
 ```text
+environment.yml
 scripts/
   main.py
   MainWindow.ui
@@ -100,8 +101,6 @@ scripts/
       tetris_popup.py
       tetrix.py
 ```
-
-The active GUI pipeline documented here intentionally excludes the `cirne/` directory.
 
 ## 4. Dependencies And Runtime Requirements
 
