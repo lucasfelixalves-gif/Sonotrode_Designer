@@ -1,0 +1,22 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Feb 16 19:15:40 2026
+
+@author: jlalves
+"""
+
+# Engineering Data (Temp files)
+data/raw/
+*.step
+*.inp
+*.dat
+*.frd
+*.log
+*.sta
+*.cvg
+models/
+*.step
+# Python Junk
+__pycache__/
+.ipynb_checkpoints/
+*.xlsx
