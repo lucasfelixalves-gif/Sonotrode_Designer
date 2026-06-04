@@ -10,7 +10,6 @@ import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
@@ -106,13 +105,6 @@ def _resolve_ccx_executable(ccx_executable):
             candidate = os.path.join(directory, name)
             if os.path.isfile(candidate):
                 return candidate
-
-    repo_root = Path(__file__).resolve().parents[2]
-    bin_dir = repo_root / "bin"
-    for name in ("ccx.exe", "ccx"):
-        candidate = bin_dir / name
-        if candidate.is_file():
-            return str(candidate)
 
     raise RuntimeError("CCX executable not found in PATH or active environment.")
 
