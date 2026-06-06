@@ -83,6 +83,12 @@ def _coalesce(config, *keys, default=None):
 
 
 def _resolve_ccx_executable(ccx_executable):
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(os.path.dirname(script_dir))
+    local_ccx = os.path.join(repo_root, "bin", "ccx.exe")
+    if os.path.isfile(local_ccx):
+        return local_ccx
+
     explicit = str(ccx_executable or "").strip()
     if explicit and explicit not in {"ccx", "ccx.exe"}:
         return explicit
@@ -515,6 +521,7 @@ class CCXSolverWorker(QThread):
 
         command = [executable, "-i", base_name]
         log_path = os.path.join(results_dir, f"{base_name}.log")
+        hide_flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         try:
             with open(log_path, "w", encoding="utf-8", errors="ignore") as log_file:
                 self._process = subprocess.Popen(
@@ -524,6 +531,7 @@ class CCXSolverWorker(QThread):
                     stderr=subprocess.STDOUT,
                     text=True,
                     env=env,
+                    creationflags=hide_flags,
                 )
                 returncode = self._process.wait()
         finally:
