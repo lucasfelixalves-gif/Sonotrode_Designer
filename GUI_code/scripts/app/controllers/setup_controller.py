@@ -18,13 +18,13 @@ MATERIAL_COLUMN_ALIASES = {
 }
 
 try:
-    from scripts.augment_master_workbook import augment_workbook
+    from scripts.augment_master_workbook import create_master_workbook
     from scripts.meshing import generate_preview_mesh
     from scripts.app.widgets.tetris_popup import TetrisDialog
     from scripts.app.workers.solver_worker import SolverWorker
     from scripts.modal_inspection_service import clear_inspection_cache
 except ModuleNotFoundError:
-    from augment_master_workbook import augment_workbook
+    from augment_master_workbook import create_master_workbook
     from meshing import generate_preview_mesh
     from app.widgets.tetris_popup import TetrisDialog
     from app.workers.solver_worker import SolverWorker
@@ -52,8 +52,6 @@ class SetupController(BaseController):
 
         if hasattr(self.ui, "btn_new_project"):
             self.ui.btn_new_project.clicked.connect(self.create_new_project)
-        if hasattr(self.ui, "btn_augment"):
-            self.ui.btn_augment.clicked.connect(self.run_augmentation)
         if hasattr(self.ui, "btn_load"):
             self.ui.btn_load.clicked.connect(self.load_project)
         if hasattr(self.ui, "btn_run"):
@@ -183,6 +181,7 @@ class SetupController(BaseController):
         project_name = project_name.strip()
 
         master_folder = os.path.join(base_dir, project_name)
+        self.session.clear_project_data()
         for subfolder in (
             "01_Master_Config",
             "02_Geometry_STEP",
@@ -192,8 +191,10 @@ class SetupController(BaseController):
         ):
             os.makedirs(os.path.join(master_folder, subfolder), exist_ok=True)
 
+        master_workbook_path = create_master_workbook(master_folder)
+
         self.session.project_dir = master_folder
-        self.session.master_workbook_path = None
+        self.session.master_workbook_path = master_workbook_path
         if hasattr(self.ui, "line_path"):
             self.ui.line_path.setText(master_folder)
         self.context.controllers["analytics"].initialize_job_table()
@@ -201,62 +202,8 @@ class SetupController(BaseController):
             self.main_window,
             "Project Created",
             f"Project '{project_name}' created.\n"
-            f"Please place your SolidWorks Excel file into:\n"
-            f"{os.path.join(master_folder, '01_Master_Config')}",
+            f"Master workbook created at:\n{master_workbook_path}",
         )
-
-    def run_augmentation(self):
-        project_path = self.ui.line_path.text().strip() if hasattr(self.ui, "line_path") else ""
-        if not project_path:
-            QMessageBox.warning(
-                self.main_window, "No Project", "Load or create a project first."
-            )
-            return
-
-        config_dir = os.path.join(project_path, "01_Master_Config")
-        xlsx_files = glob(os.path.join(config_dir, "*.xlsx"))
-        if not xlsx_files:
-            QMessageBox.warning(
-                self.main_window,
-                "No Workbook Found",
-                f"No .xlsx file found in:\n{config_dir}",
-            )
-            return
-        if len(xlsx_files) > 1:
-            QMessageBox.warning(
-                self.main_window,
-                "Multiple Workbooks Found",
-                f"Expected exactly one .xlsx in:\n{config_dir}\n"
-                f"Found {len(xlsx_files)}. Please remove the extras.",
-            )
-            return
-
-        excel_file_path = xlsx_files[0]
-        sheet_name, ok = QInputDialog.getText(
-            self.main_window,
-            "Geometry Sheet Name",
-            "Enter the SolidWorks geometry sheet name:",
-            text="Sheet1",
-        )
-        if not ok or not sheet_name.strip():
-            return
-        sheet_name = sheet_name.strip()
-
-        try:
-            augment_workbook(excel_file_path, sheet_name)
-            self.session.master_workbook_path = excel_file_path
-            self._load_project_workbook(excel_file_path, load_first_geometry=True)
-            QMessageBox.information(
-                self.main_window,
-                "Augmentation Complete",
-                f"Workbook successfully augmented:\n{excel_file_path}",
-            )
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(
-                self.main_window,
-                "Augmentation Failed",
-                f"An error occurred:\n{exc}",
-            )
 
     def load_project(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -325,7 +272,7 @@ class SetupController(BaseController):
                 QMessageBox.warning(
                     self.main_window,
                     "Missing Configuration",
-                    "Place exactly one workbook in 01_Master_Config and click Augment or Load.",
+                    "Place exactly one workbook in 01_Master_Config and click Load.",
                 )
                 return
         except Exception as exc:  # noqa: BLE001

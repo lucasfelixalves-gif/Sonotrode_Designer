@@ -664,7 +664,7 @@ class AnalyticsController(BaseController):
                 QMessageBox.warning(
                     self.main_window,
                     "Missing Configuration",
-                    "Place exactly one workbook in 01_Master_Config and click Augment or Load.",
+                    "Place exactly one workbook in 01_Master_Config and click Load.",
                 )
                 return
         except Exception as exc:  # noqa: BLE001
@@ -794,18 +794,10 @@ class AnalyticsController(BaseController):
             QMessageBox.warning(self.main_window, "No Geometry Data", "There is no geometry data to export.")
             return
 
-        export_df = source_df.copy()
-        if "Model_name" in export_df.columns:
-            ordered_columns = ["Model_name"] + [column for column in export_df.columns if column != "Model_name"]
-            export_df = export_df.loc[:, ordered_columns]
-
-        config_dir = Path(self.session.project_dir) / "01_Master_Config"
-        export_path = config_dir / "Master_Config.xlsx"
-
         try:
             if create_master_workbook is None:
                 raise RuntimeError("create_master_workbook not available")
-            msg = create_master_workbook(str(export_path), df=export_df)
+            create_master_workbook(self.session.project_dir)
         except FileExistsError as exc:
             QMessageBox.warning(self.main_window, "One Excel Workbook already in 01_Master_Config", str(exc))
             return
@@ -813,6 +805,7 @@ class AnalyticsController(BaseController):
             QMessageBox.critical(self.main_window, "Export Failed", f"Could not create master workbook:\n{exc}")
             return
 
+        export_path = Path(self.session.project_dir) / "01_Master_Config" / "Master_Config.xlsx"
         self.update_console(f"[EXPORT] Geometry workbook exported to: {export_path}\n")
         QMessageBox.information(
             self.main_window,
@@ -845,7 +838,7 @@ class AnalyticsController(BaseController):
                     QMessageBox.warning(
                         self.main_window,
                         "Missing Configuration",
-                        "Place exactly one workbook in 01_Master_Config and click Augment or Load.",
+                        "Place exactly one workbook in 01_Master_Config and click Load.",
                     )
                     return
             except Exception as exc:  # noqa: BLE001

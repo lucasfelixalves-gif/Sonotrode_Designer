@@ -41,16 +41,9 @@
               </widget>
              </item>
              <item>
-              <widget class="QPushButton" name="btn_create_workbook">
-               <property name="text">
-                <string>2. Create Workbook</string>
-               </property>
-              </widget>
-             </item>
-             <item>
               <widget class="QPushButton" name="btn_load">
                <property name="text">
-                <string>3. Load Project</string>
+                     <string>2. Load Project</string>
                </property>
               </widget>
              </item>
