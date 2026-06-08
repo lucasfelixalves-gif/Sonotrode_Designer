@@ -13,6 +13,7 @@ try:
     from scripts.ccx_solver import CCXSolverWorker
     from scripts.app.workers.mesh_worker import MeshGenerationWorker
     from scripts.analytics_service import load_geometry_parameters
+    from scripts.augment_master_workbook import create_master_workbook
     from scripts.analytics_table_model import DataFrameTableModel
     from scripts.ccx_results_parser import (
         SUMMARY_COLUMNS,
@@ -25,6 +26,10 @@ except ModuleNotFoundError:
     from ccx_solver import CCXSolverWorker
     from app.workers.mesh_worker import MeshGenerationWorker
     from analytics_service import load_geometry_parameters
+    try:
+        from augment_master_workbook import create_master_workbook
+    except Exception:
+        create_master_workbook = None
     from analytics_table_model import DataFrameTableModel
     from ccx_results_parser import (
         SUMMARY_COLUMNS,
@@ -458,6 +463,8 @@ class AnalyticsController(BaseController):
             self.widgets.btn_toggle_ccx_default_style = self.ui.btn_toggle_ccx.styleSheet()
             self.ui.btn_toggle_ccx.clicked.connect(self.toggle_ccx_solver)
             self._reset_ccx_toggle_button()
+        if hasattr(self.ui, "btn_generate_geometry"):
+            self.ui.btn_generate_geometry.clicked.connect(self.generate_geometry_workbook)
         if hasattr(self.ui, "btn_export_excel"):
             self.ui.btn_export_excel.clicked.connect(self.export_table_to_excel)
 
@@ -773,6 +780,45 @@ class AnalyticsController(BaseController):
             ws.column_dimensions[get_column_letter(idx)].width = max(len(str(column_name)), 1) + 2
 
         wb.save(export_path)
+
+    def generate_geometry_workbook(self):
+        if not self.session.project_dir:
+            QMessageBox.warning(self.main_window, "No Project", "Load or create a project first.")
+            return
+
+        source_df = getattr(self, "model_dataframe", None)
+        if source_df is None:
+            source_df = getattr(self.session, "df_mesh", None)
+
+        if source_df is None or source_df.empty:
+            QMessageBox.warning(self.main_window, "No Geometry Data", "There is no geometry data to export.")
+            return
+
+        export_df = source_df.copy()
+        if "Model_name" in export_df.columns:
+            ordered_columns = ["Model_name"] + [column for column in export_df.columns if column != "Model_name"]
+            export_df = export_df.loc[:, ordered_columns]
+
+        config_dir = Path(self.session.project_dir) / "01_Master_Config"
+        export_path = config_dir / "Master_Config.xlsx"
+
+        try:
+            if create_master_workbook is None:
+                raise RuntimeError("create_master_workbook not available")
+            msg = create_master_workbook(str(export_path), df=export_df)
+        except FileExistsError as exc:
+            QMessageBox.warning(self.main_window, "One Excel Workbook already in 01_Master_Config", str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self.main_window, "Export Failed", f"Could not create master workbook:\n{exc}")
+            return
+
+        self.update_console(f"[EXPORT] Geometry workbook exported to: {export_path}\n")
+        QMessageBox.information(
+            self.main_window,
+            "Geometry Generated",
+            f"Geometry configuration file generated successfully:\n{export_path}",
+        )
 
     def toggle_ccx_solver(self):
         if not self.session.is_solving:
