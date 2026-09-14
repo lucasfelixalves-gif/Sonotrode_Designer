@@ -11,5 +11,5 @@ class EmittingStream(QObject):
             self.textWritten.emit(str(text))
 
     def flush(self):
-        # Stream API compatibility (no buffered state to flush).
+        # Stream API compatibility 
         pass
