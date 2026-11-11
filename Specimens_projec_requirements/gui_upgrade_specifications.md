@@ -90,4 +90,5 @@ The 3D Results tab currently animates FRD displacement data. It must be fundamen
 
   * It will plot the extracted stress data (Y-axis: Stress \[MPa\], X-axis: Distance along path \[mm\]).
 
-  * **Interactivity:** As the user moves the slider for the input amplitude or changes the active mode, the floating plot must update in real-time, allowing the designer to strictly verify stress uniformity and peak locations without closing the 3D view.
+  * **Interactivity:** At the bottom of the floating Qt window, there should be a slider for the input amplitude. This should work only for the purposed of this representation without altering the rest of the session's data. As the user moves the slider for the input amplitude, the floating plot must update in real-time, allowing the designer to strictly verify stress uniformity and peak locations without closing the 3D view. If the user wishes to change the path or the plane, he should either add another plane and (consequentely) create another pop-up. These floating windows should be minimizable and should not cause the UI to freeze. 
+  

@@ -32,7 +32,7 @@ VHCF failure is driven by localized stress, whereas the ultrasonic booster outpu
 
   * **Setup Tab:** Add a numerical input field for "Material Yield Strength ($\sigma_{yield}$ \[MPa\])" alongside the input amplitude.
 
-  * **Analytics Tab:** The summary table must dynamically generate new columns based on the specimen type, including `Max_Stress [MPa]`, `Stress_Gain [MPa/µm]`, and a visual `Yield_Status` (Green "Pass" / Red "Fail"). And alsp ditch columns not required by the specific node.
+  * **Analytics Tab:** The summary table must dynamically generate new columns based on the specimen type, including `Max_Stress [MPa]`, `Stress_Gain [MPa/µm]`, and a visual `Yield_Status` (Green "Pass" / Red "Fail"). It also must ditch columns not required by the specific node. Basically, each specimen type will have it's own personalized summary table. 
 
 ### 2.3. Interactive Stress Visualization
 
@@ -58,7 +58,8 @@ To rigorously verify stress uniformity and locate stress concentrations, the des
 
   * **Floating Plot:** A floating window spawns displaying a 2D cut view of the intersected cross-section. This acts as a contour map colored by the active stress field. To keep the visualization clean and focused purely on the stress distribution across the geometry, coordinate axes are hidden in this view.
 
-* **Real-Time Updates:** For both the Path and Plane tools, the spawned floating windows are fully interactive and responsive. As the user scrubs the input amplitude slider or switches between vibration modes, the plots and cross-sectional colormaps update in real-time without requiring the user to close the 3D view or re-define the tool.
+* **Real-Time Updates:** 
+  * **Interactivity:** At the bottom of the floating Qt window, there should be a slider for the input amplitude. This should work only for the purposed of this representation without altering the rest of the session's data. As the user moves the slider for the input amplitude, the floating plot must update in real-time, allowing the designer to strictly verify stress uniformity and peak locations without closing the 3D view. If the user wishes to change the path or the plane, he should either add another plane and (consequentely) create another pop-up. These floating windows should be minimizable and should not cause the UI to freeze. 
 
 ## 3. Expected Implementation Challenges & Required Architectural Shifts
 
