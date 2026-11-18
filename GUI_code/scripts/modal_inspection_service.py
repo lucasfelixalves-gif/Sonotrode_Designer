@@ -385,7 +385,18 @@ def _load_frd_stress_fields(frd_path, target_mode_index):
 
             parts = line.split()
             if len(parts) < 8:
-                continue
+                # FRD fixed-format records can have no whitespace between fields.
+                record = line.strip()
+                if len(record) < 23:
+                    continue
+                parts = ["-1", record[3:12].strip()]
+                try:
+                    float_matches = FRD_FLOAT_REGEX.findall(record[12:])
+                    parts.extend(float_matches)
+                except (TypeError, ValueError):
+                    continue
+                if len(parts) < 8:
+                    continue
             try:
                 element_id = int(parts[1])
                 values = [_to_float(token) for token in parts[2:]]
@@ -416,7 +427,7 @@ def _load_or_build_base_mesh(project_dir, model_name):
     return dataset, node_mapping
 
 
-def load_base_result_mesh(project_dir, model_name, mode_index):
+def load_base_result_mesh(project_dir, model_name, mode_index, input_amplitude=1.0):
     cache_entry = _get_or_create_model_cache(project_dir, model_name)
     frd_path = cache_entry["frd_path"]
     if not os.path.isfile(frd_path):
@@ -426,6 +437,7 @@ def load_base_result_mesh(project_dir, model_name, mode_index):
     inp_path = cache_entry["inp_path"]
 
     boundary_node_ids = extract_node_sets(inp_path, target_sets=("YMIN", "YMAX"))
+    base_node_ids = extract_node_sets(inp_path, target_sets=("YMIN",))
     boundary_mask = np.zeros(dataset.n_points, dtype=int)
     for node_id in boundary_node_ids:
         mapped_index = node_mapping.get(node_id)
@@ -457,6 +469,32 @@ def load_base_result_mesh(project_dir, model_name, mode_index):
                 values[cell_index] = metrics[field_name]
         if np.isfinite(values).any():
             dataset.cell_data[scalar_name] = values
+
+    stress_available = any(
+        scalar_name in dataset.cell_data
+        for scalar_name in ("Von Mises Stress", "Max Principal Stress")
+    )
+    if stress_available:
+        base_mask = np.zeros(dataset.n_points, dtype=bool)
+        for node_id in base_node_ids:
+            mapped_index = node_mapping.get(node_id)
+            if mapped_index is not None and 0 <= mapped_index < dataset.n_points:
+                base_mask[mapped_index] = True
+        base_y_values = vectors[base_mask, 1] if np.any(base_mask) else np.array([])
+        raw_base_y = float(np.mean(np.abs(base_y_values))) if base_y_values.size else 0.0
+        raw_base_y_um = abs(raw_base_y) * 1000.0
+        stress_scale = (
+            abs(float(input_amplitude)) / raw_base_y_um
+            if raw_base_y_um > 1e-12
+            else 1.0
+        )
+        for scalar_name in ("Von Mises Stress", "Max Principal Stress"):
+            if scalar_name in dataset.cell_data:
+                dataset.cell_data[scalar_name] = (
+                    np.asarray(dataset.cell_data[scalar_name], dtype=float) * stress_scale
+                )
+
+        dataset = dataset.cell_data_to_point_data()
 
     max_disp = np.max(np.linalg.norm(vectors, axis=1))
 

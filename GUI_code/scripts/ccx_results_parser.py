@@ -69,7 +69,7 @@ _EIGEN_MODE_RE = re.compile(
 )
 _FRD_MODE_RE = re.compile(r"1P\s*MODE\s+(-?\d+)", re.IGNORECASE)
 _DISP_SET_RE = re.compile(
-    r"displacements\s*\(vx,vy,vz\)\s*for\s*set\s+([A-Za-z0-9_]+)",
+    r"(?:displacements|disp(?:lacement)?)\s*(?:\([^)]*\))?.*?\b(?:for\s+)?(?:set\s+)?([A-Za-z0-9_]+)",
     re.IGNORECASE,
 )
 _FRD_FLOAT_RE = re.compile(
@@ -293,6 +293,87 @@ def parse_dat_modal_results(dat_path: str, node_sets: Dict[str, Set[int]]):
     return mode_frequencies, mode_displacements
 
 
+def parse_frd_modal_displacements(
+    frd_path: str,
+    node_sets: Dict[str, Set[int]],
+):
+    """Parse nodal displacements and frequencies directly from an FRD file."""
+    mode_frequencies = {}
+    mode_displacements = {}
+    tracked_sets = set(node_sets.keys())
+    current_mode = None
+    reading_disp = False
+
+    with open(frd_path, "r", encoding="utf-8", errors="ignore") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            mode_match = _FRD_MODE_RE.search(line)
+            if mode_match:
+                current_mode = int(mode_match.group(1))
+                mode_displacements.setdefault(
+                    current_mode,
+                    {name: [] for name in tracked_sets},
+                )
+                reading_disp = False
+                continue
+
+            if current_mode is None:
+                continue
+
+            if line.startswith("100C"):
+                numbers = _FRD_FLOAT_RE.findall(line)
+                if numbers:
+                    mode_frequencies[current_mode] = _safe_float(
+                        numbers[-1].replace("D", "E").replace("d", "E"),
+                        0.0,
+                    )
+                continue
+
+            if line.startswith("-4"):
+                reading_disp = "DISP" in line.upper()
+                continue
+            if line.startswith("-3"):
+                reading_disp = False
+                continue
+            if not reading_disp or not line.startswith("-1"):
+                continue
+
+            parts = line.split()
+            if len(parts) < 5:
+                record = line.strip()
+                if len(record) < 23:
+                    continue
+                parts = ["-1", record[3:12].strip()]
+                parts.extend(_FRD_FLOAT_RE.findall(record[12:]))
+                if len(parts) < 5:
+                    continue
+            try:
+                node_id = int(parts[1])
+            except ValueError:
+                continue
+
+            values = []
+            for token in parts[2:]:
+                match = _FRD_FLOAT_RE.fullmatch(token)
+                if match:
+                    values.append(
+                        _safe_float(
+                            match.group(0).replace("D", "E").replace("d", "E"),
+                            0.0,
+                        )
+                    )
+            if len(values) < 3:
+                continue
+
+            for set_name, set_nodes in node_sets.items():
+                if node_id in set_nodes:
+                    mode_displacements[current_mode][set_name].append(
+                        tuple(values[:3])
+                    )
+
+    return mode_frequencies, mode_displacements
+
+
 def _stress_values_to_metrics(values):
     if len(values) < 6:
         return None
@@ -391,7 +472,14 @@ def parse_frd_modal_stresses(
 
             parts = line.split()
             if len(parts) < 8:
-                continue
+                record = line.strip()
+                if len(record) < 23:
+                    continue
+                parts = ["-1", record[3:12].strip()]
+                float_matches = _FRD_FLOAT_RE.findall(record[12:])
+                parts.extend(float_matches)
+                if len(parts) < 8:
+                    continue
             try:
                 element_id = int(parts[1])
             except ValueError:
@@ -507,16 +595,25 @@ def select_longitudinal_mode(
     # Calculate scaling factor to match physical amplitude.
     # CalculiX FRD/DAT values are in the model's base length unit (mm here),
     # so convert the physical outputs to micrometers after scaling.
-    raw_base_mean = selected["ymin_mean"]
-    scaling_factor = abs(input_amplitude / raw_base_mean) if abs(raw_base_mean) > near_zero else 1.0
-    micrometer_scale = scaling_factor
+    raw_base_mean_mm = selected["ymin_mean"]
+    target_amplitude_um = abs(_safe_float(input_amplitude, 1.0))
+    raw_base_mean_um = abs(raw_base_mean_mm) * 1000.0
+    scaling_factor = (
+        target_amplitude_um / raw_base_mean_um
+        if raw_base_mean_um > near_zero
+        else 1.0
+    )
 
-    # Apply scaling factor to core metrics before calculating ratios.
-    tip_mean = selected["ymax_mean"] * micrometer_scale
-    base_mean = selected["ymin_mean"] * micrometer_scale
-    tip_std = selected["tip_std"] * micrometer_scale
-    base_std = selected["base_std"] * micrometer_scale
-    tip_y_vals = [val * micrometer_scale for val in selected.get("_tip_y_vals", [])]
+    # CalculiX displacements are in mm. Convert both endpoints to microns
+    # after applying the common modal scaling factor.
+    tip_mean = selected["ymax_mean"] * 1000.0 * scaling_factor
+    base_mean = selected["ymin_mean"] * 1000.0 * scaling_factor
+    tip_std = selected["tip_std"] * 1000.0 * scaling_factor
+    base_std = selected["base_std"] * 1000.0 * scaling_factor
+    tip_y_vals = [
+        val * 1000.0 * scaling_factor
+        for val in selected.get("_tip_y_vals", [])
+    ]
 
     # Recalculate gain and uniformity using scaled values
     try:
@@ -541,11 +638,14 @@ def select_longitudinal_mode(
         ranked_modes_um.append(
             {
                 **mode_record,
-                "ymax_mean": mode_record["ymax_mean"] * micrometer_scale,
-                "ymin_mean": mode_record["ymin_mean"] * micrometer_scale,
-                "tip_std": mode_record["tip_std"] * micrometer_scale,
-                "base_std": mode_record["base_std"] * micrometer_scale,
-                "_tip_y_vals": [val * micrometer_scale for val in mode_record.get("_tip_y_vals", [])],
+                "ymax_mean": mode_record["ymax_mean"] * 1000.0 * scaling_factor,
+                "ymin_mean": mode_record["ymin_mean"] * 1000.0 * scaling_factor,
+                "tip_std": mode_record["tip_std"] * 1000.0 * scaling_factor,
+                "base_std": mode_record["base_std"] * 1000.0 * scaling_factor,
+                "_tip_y_vals": [
+                    val * 1000.0 * scaling_factor
+                    for val in mode_record.get("_tip_y_vals", [])
+                ],
             }
         )
 
@@ -558,8 +658,9 @@ def select_longitudinal_mode(
     selected["tip_std"] = tip_std
     selected["base_std"] = base_std
     selected["gain_ratio"] = gain_ratio
-    selected["_raw_base_mean"] = raw_base_mean
-    selected["_scaling_factor"] = micrometer_scale
+    selected["_raw_base_mean"] = raw_base_mean_mm
+    selected["_raw_base_mean_um"] = raw_base_mean_um
+    selected["_scaling_factor"] = scaling_factor
 
     return selected
 
@@ -574,7 +675,7 @@ def _mean_component(values, component_index):
     )
 
 
-def _average_gauge_stress(mode_stresses, mode_index):
+def _maximum_gauge_stress(mode_stresses, mode_index):
     values = mode_stresses.get(mode_index, []) if mode_stresses else []
     numeric_values = []
     for value in values:
@@ -583,12 +684,11 @@ def _average_gauge_stress(mode_stresses, mode_index):
         numeric = _safe_float(value, math.nan)
         if not math.isnan(numeric):
             numeric_values.append(numeric)
-    return statistics.fmean(numeric_values) if numeric_values else math.nan
+    return max(numeric_values) if numeric_values else math.nan
 
 
 def _apply_stress_metrics(metrics, mode_stresses, input_amplitude, yield_strength):
-    raw_base_mean = _safe_float(metrics.get("_raw_base_mean"), 0.0)
-    raw_stress = _average_gauge_stress(mode_stresses, metrics["mode_index"])
+    raw_stress = _maximum_gauge_stress(mode_stresses, metrics["mode_index"])
     if math.isnan(raw_stress):
         metrics["max_stress"] = math.nan
         metrics["stress_gain"] = math.nan
@@ -596,12 +696,13 @@ def _apply_stress_metrics(metrics, mode_stresses, input_amplitude, yield_strengt
         return metrics
 
     amplitude = abs(_safe_float(input_amplitude, 1.0))
-    if abs(raw_base_mean) > 1e-12:
-        stress_gain = abs(raw_stress / raw_base_mean)
-        max_stress = stress_gain * amplitude
-    else:
+    scaling_factor = _safe_float(metrics.get("_scaling_factor"), math.nan)
+    if math.isnan(scaling_factor) or amplitude <= 1e-12:
         stress_gain = math.nan
         max_stress = math.nan
+    else:
+        max_stress = abs(raw_stress * scaling_factor)
+        stress_gain = abs(max_stress / amplitude)
 
     metrics["max_stress"] = max_stress
     metrics["stress_gain"] = stress_gain
@@ -637,8 +738,8 @@ def parse_and_select_mode(
     if metrics is None:
         return None
 
-    metrics["base_disp"] = metrics["ymin_mean"]
-    metrics["tip_disp"] = metrics["ymax_mean"]
+    metrics["base_disp"] = abs(metrics["ymin_mean"])
+    metrics["tip_disp"] = abs(metrics["ymax_mean"])
     metrics["displacement_ratio"] = metrics["gain_ratio"]
     if normalized == "Disc Specimen (Biaxial)":
         selected_data = mode_displacements.get(metrics["mode_index"], {})
@@ -646,7 +747,11 @@ def parse_and_select_mode(
             selected_data.get("CENTER", [])
             or selected_data.get("GAUGE_VOL_NODES", [])
         )
-        metrics["center_disp_z"] = _mean_component(center_data, 2) * metrics["_scaling_factor"]
+        metrics["center_disp_z"] = (
+            _mean_component(center_data, 2)
+            * 1000.0
+            * metrics["_scaling_factor"]
+        )
 
     _apply_stress_metrics(metrics, mode_stresses, input_amplitude, yield_strength)
     metrics["specimen_type"] = normalized

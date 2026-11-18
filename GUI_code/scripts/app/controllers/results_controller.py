@@ -239,6 +239,7 @@ class ResultsController(BaseController):
             self.session.project_dir,
             model_name,
             self.session.current_mode_index,
+            self.session.input_amplitude,
         )
         self.session.result_camera_initialized = False
         self.update_warped_mesh()
@@ -419,7 +420,11 @@ class ResultsController(BaseController):
             line_width=3,
             reset_camera=False,
         )
-        sampled = self.session.base_result_mesh.sample(line)
+        warped, _ = warp_result_mesh(
+            self.session.base_result_mesh,
+            self.ui.slider_warp.value(),
+        )
+        sampled = warped.sample(line)
         self._open_stress_popup(sampled, np.linspace(0.0, line.length, sampled.n_points))
 
     def _define_cross_section(self):
@@ -434,7 +439,11 @@ class ResultsController(BaseController):
         if not accepted:
             return
 
-        bounds = self.session.base_result_mesh.bounds
+        warped, _ = warp_result_mesh(
+            self.session.base_result_mesh,
+            self.ui.slider_warp.value(),
+        )
+        bounds = warped.bounds
         axis_index = {"X": 0, "Y": 1, "Z": 2}[axis]
         coordinate, accepted = QInputDialog.getDouble(
             self.main_window,
@@ -450,7 +459,7 @@ class ResultsController(BaseController):
 
         origin = [0.0, 0.0, 0.0]
         origin[axis_index] = coordinate
-        sliced = self.session.base_result_mesh.slice(normal=axis, origin=origin)
+        sliced = warped.slice(normal=axis, origin=origin)
         distances = np.linalg.norm(sliced.points - np.asarray(origin), axis=1)
         self.widgets.plotter_results.add_mesh(
             sliced,

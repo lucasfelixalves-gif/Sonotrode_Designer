@@ -17,6 +17,7 @@ try:
     from scripts.ccx_results_parser import (
         build_summary_row,
         parse_dat_modal_results,
+        parse_frd_modal_displacements,
         parse_frd_modal_stresses,
         parse_mesh_element_sets,
         parse_mesh_node_sets,
@@ -31,6 +32,7 @@ except ModuleNotFoundError:
     from ccx_results_parser import (
         build_summary_row,
         parse_dat_modal_results,
+        parse_frd_modal_displacements,
         parse_frd_modal_stresses,
         parse_mesh_element_sets,
         parse_mesh_node_sets,
@@ -342,13 +344,29 @@ class AnalyticsController(BaseController):
                 except Exception as exc:  # noqa: BLE001
                     print(f"[WARNING] Could not parse mesh node count for {model_name}: {exc}")
 
-            if status == "Solved" and dat_path.is_file():
+            if status == "Solved":
                 try:
                     node_sets, node_count = parse_mesh_node_sets(
                         str(mesh_inp_path),
                         ("YMIN", "YMAX", "CENTER", "GAUGE_VOL_NODES"),
                     )
-                    mode_frequencies, mode_displacements = parse_dat_modal_results(str(dat_path), node_sets)
+                    mode_frequencies = {}
+                    mode_displacements = {}
+                    if dat_path.is_file():
+                        mode_frequencies, mode_displacements = parse_dat_modal_results(
+                            str(dat_path),
+                            node_sets,
+                        )
+                    if not mode_displacements or not any(
+                        set_data.get("YMIN") or set_data.get("YMAX")
+                        for set_data in mode_displacements.values()
+                    ):
+                        frd_mode_frequencies, frd_mode_displacements = parse_frd_modal_displacements(
+                            str(frd_path),
+                            node_sets,
+                        )
+                        mode_frequencies = frd_mode_frequencies or mode_frequencies
+                        mode_displacements = frd_mode_displacements or mode_displacements
                     element_sets = parse_mesh_element_sets(str(mesh_inp_path))
                     mode_stresses = parse_frd_modal_stresses(
                         str(frd_path),
