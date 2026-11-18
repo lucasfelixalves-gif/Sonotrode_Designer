@@ -14,11 +14,12 @@ class MeshGenerationWorker(QThread):
     progress_updated = Signal(int)
     status_updated = Signal(str)
 
-    def __init__(self, project_dir, df_mesh, semantic_roles, target_models):
+    def __init__(self, project_dir, df_mesh, semantic_roles, target_models, gauge_bounds=None):
         super().__init__()
         self.project_dir = project_dir
         self.df_mesh = df_mesh
         self.semantic_roles = semantic_roles
+        self.gauge_bounds = gauge_bounds
         self.target_models = list(target_models or [])
 
     def _get_config_row(self, model_name):
@@ -68,6 +69,7 @@ class MeshGenerationWorker(QThread):
                     mesh_output_path=mesh_inp_path,
                     mesh_config=mesh_cfg,
                     semantic_roles=self.semantic_roles,
+                    gauge_bounds=self.gauge_bounds,
                     quiet=True,
                 )
                 self.status_updated.emit(f"MESH|DONE|{base_name} ({index}/{total})")

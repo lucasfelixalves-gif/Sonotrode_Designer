@@ -360,6 +360,10 @@ def build_frequency_deck(
     lines.append("*NODE FILE")
     lines.append(",".join(output_vars))
 
+    if "ELSET=GAUGE_VOL" in mesh_content.upper():
+        lines.append("*EL FILE, ELSET=GAUGE_VOL")
+        lines.append("S")
+
     if output_nsets:
         for nset in output_nsets:
             lines.append(f"*NODE PRINT, NSET={nset}")

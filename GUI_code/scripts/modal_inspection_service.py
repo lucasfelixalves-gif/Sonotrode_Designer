@@ -17,6 +17,7 @@ MODE_LINE_REGEX = re.compile(r"1PMODE\s+(-?\d+)")
 FRD_VECTOR_REGEX = re.compile(r"[-+]?\d*\.?\d+[EeDd][-+]?\d{2,3}")
 FRD_FLOAT_REGEX = re.compile(r"[-+]?\d*\.\d+(?:[EeDd][-+]?\d+)?")
 FRD_NUMBER_REGEX = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[EeDd][-+]?\d+)?")
+FRD_MODE_REGEX = re.compile(r"1P\s*MODE\s+(-?\d+)", re.IGNORECASE)
 
 
 def _cache_key(project_dir, model_name):
@@ -43,13 +44,65 @@ def _to_float(value):
 
 
 def _extract_mode_from_line(line):
-    match = MODE_LINE_REGEX.search(line)
+    match = MODE_LINE_REGEX.search(line) or FRD_MODE_REGEX.search(line)
     if not match:
         return None
     try:
         return int(match.group(1))
     except ValueError:
         return None
+
+
+def _stress_tensor_metrics(values):
+    if len(values) < 6:
+        return None
+
+    sxx, syy, szz, sxy, sxz, syz = values[-6:]
+    von_mises = np.sqrt(
+        0.5 * (
+            (sxx - syy) ** 2
+            + (syy - szz) ** 2
+            + (szz - sxx) ** 2
+            + 6.0 * (sxy**2 + sxz**2 + syz**2)
+        )
+    )
+    off_diagonal = sxy**2 + sxz**2 + syz**2
+    if off_diagonal <= 1e-30:
+        max_principal = max(sxx, syy, szz)
+    else:
+        mean = (sxx + syy + szz) / 3.0
+        scale = np.sqrt(
+            ((sxx - mean) ** 2 + (syy - mean) ** 2 + (szz - mean) ** 2
+             + 2.0 * off_diagonal) / 6.0
+        )
+        if scale <= 1e-30:
+            max_principal = mean
+        else:
+            b11 = (sxx - mean) / scale
+            b22 = (syy - mean) / scale
+            b33 = (szz - mean) / scale
+            b12 = sxy / scale
+            b13 = sxz / scale
+            b23 = syz / scale
+            determinant = (
+                b11 * b22 * b33
+                + 2.0 * b12 * b13 * b23
+                - b11 * b23**2
+                - b22 * b13**2
+                - b33 * b12**2
+            )
+            determinant = max(-1.0, min(1.0, determinant / 2.0))
+            angle = np.arccos(determinant) / 3.0
+            max_principal = max(
+                mean + 2.0 * scale * np.cos(angle),
+                mean + 2.0 * scale * np.cos(angle + 2.0 * np.pi / 3.0),
+                mean + 2.0 * scale * np.cos(angle + 4.0 * np.pi / 3.0),
+            )
+
+    return {
+        "von_mises": float(von_mises),
+        "max_principal": float(max_principal),
+    }
 
 
 def _get_or_create_model_cache(project_dir, model_name):
@@ -94,6 +147,30 @@ def _build_node_mapping(inp_path):
 
             mapping[nid] = idx
             idx += 1
+
+    return mapping
+
+
+def _build_element_mapping(inp_path):
+    """Read explicit element IDs in the same order as the mesh dataset cells."""
+    mapping = {}
+    cell_index = 0
+    in_element_block = False
+
+    with open(inp_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped.startswith("*"):
+                in_element_block = stripped.upper().startswith("*ELEMENT")
+                continue
+            if not in_element_block or not stripped:
+                continue
+            try:
+                element_id = int(stripped.split(",", 1)[0].strip())
+            except ValueError:
+                continue
+            mapping[element_id] = cell_index
+            cell_index += 1
 
     return mapping
 
@@ -279,6 +356,48 @@ def _load_frd_displacements(frd_path, node_mapping, target_mode_index):
     return displacements
 
 
+def _load_frd_stress_fields(frd_path, target_mode_index):
+    """Parse element stress tensors for one FRD mode."""
+    stresses = {}
+    current_mode = None
+    reading_stress = False
+
+    with open(frd_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            mode_index = _extract_mode_from_line(line)
+            if mode_index is not None:
+                current_mode = mode_index
+                reading_stress = False
+                continue
+
+            if current_mode != int(target_mode_index):
+                continue
+            if line.strip().startswith("-4"):
+                reading_stress = "STRESS" in line.upper()
+                continue
+            if not reading_stress:
+                continue
+            if line.strip().startswith("-3"):
+                reading_stress = False
+                continue
+            if not line.strip().startswith("-1"):
+                continue
+
+            parts = line.split()
+            if len(parts) < 8:
+                continue
+            try:
+                element_id = int(parts[1])
+                values = [_to_float(token) for token in parts[2:]]
+            except ValueError:
+                continue
+            metrics = _stress_tensor_metrics(values)
+            if metrics is not None:
+                stresses[element_id] = metrics
+
+    return stresses
+
+
 def _load_or_build_base_mesh(project_dir, model_name):
     cache_entry = _get_or_create_model_cache(project_dir, model_name)
 
@@ -323,7 +442,21 @@ def load_base_result_mesh(project_dir, model_name, mode_index):
     dataset = dataset.copy(deep=True)
     dataset.point_data["Boundary_Nodes"] = boundary_mask
     dataset.point_data[vector_name] = vectors
+    dataset.point_data["Displacement_Magnitude"] = np.linalg.norm(vectors, axis=1)
+    dataset.point_data["Displacement_Y"] = vectors[:, 1]
     dataset.set_active_vectors(vector_name)
+
+    element_mapping = _build_element_mapping(inp_path)
+    stress_fields = _load_frd_stress_fields(frd_path, mode_index)
+    for field_name in ("von_mises", "max_principal"):
+        scalar_name = "Von Mises Stress" if field_name == "von_mises" else "Max Principal Stress"
+        values = np.full(dataset.n_cells, np.nan)
+        for element_id, metrics in stress_fields.items():
+            cell_index = element_mapping.get(element_id)
+            if cell_index is not None and cell_index < dataset.n_cells:
+                values[cell_index] = metrics[field_name]
+        if np.isfinite(values).any():
+            dataset.cell_data[scalar_name] = values
 
     max_disp = np.max(np.linalg.norm(vectors, axis=1))
 
@@ -375,6 +508,7 @@ def warp_result_mesh(base_mesh, slider_value):
     magnitude = np.linalg.norm(warped.point_data[vector_name], axis=1)
     scalar_name = "Displacement_Magnitude"
     warped.point_data[scalar_name] = magnitude
+    warped.point_data["Displacement_Y"] = warped.point_data[vector_name][:, 1]
 
     return warped, scalar_name
 

@@ -101,6 +101,37 @@
                 </widget>
                </item>
                <item>
+                <widget class="QLabel" name="label_specimen_type">
+                 <property name="font">
+                  <font>
+                   <pointsize>9</pointsize>
+                  </font>
+                 </property>
+                 <property name="text">
+                  <string>Specimen Type:</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QComboBox" name="combo_specimen_type">
+                 <item>
+                  <property name="text">
+                   <string>Longitudinal Specimen</string>
+                  </property>
+                 </item>
+                 <item>
+                  <property name="text">
+                   <string>Disc Specimen (Biaxial)</string>
+                  </property>
+                 </item>
+                 <item>
+                  <property name="text">
+                   <string>Flat/Thin-Walled Specimen</string>
+                  </property>
+                 </item>
+                </widget>
+               </item>
+               <item>
                 <widget class="QPushButton" name="btn_assign_amplitude">
                  <property name="font">
                   <font>
@@ -114,6 +145,31 @@
                </item>
                <item>
                 <widget class="QDoubleSpinBox" name="spin_input_amplitude"/>
+               </item>
+               <item>
+                <widget class="QLabel" name="label_yield_strength">
+                 <property name="font">
+                  <font>
+                   <pointsize>9</pointsize>
+                  </font>
+                 </property>
+                 <property name="text">
+                  <string>Material Yield Strength (σ_yield [MPa]):</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QDoubleSpinBox" name="spin_yield_strength">
+                 <property name="maximum">
+                  <double>2000.000000000000000</double>
+                 </property>
+                 <property name="value">
+                  <double>300.000000000000000</double>
+                 </property>
+                 <property name="suffix">
+                  <string> MPa</string>
+                 </property>
+                </widget>
                </item>
               </layout>
              </item>
@@ -143,6 +199,11 @@
                  <string>Base - &quot;YMIN&quot;</string>
                 </property>
                </item>
+                <item>
+                 <property name="text">
+                  <string>Gauge Section (Stress Harvesting)</string>
+                 </property>
+                </item>
               </widget>
              </item>
              <item>
@@ -370,16 +431,51 @@
             </widget>
            </item>
            <item row="1" column="0">
-            <widget class="QPushButton" name="btn_animation">
-             <property name="font">
-              <font>
-               <pointsize>8</pointsize>
-              </font>
-             </property>
-             <property name="text">
-              <string>Make it move!</string>
-             </property>
-            </widget>
+            <layout class="QHBoxLayout" name="horizontalLayout_results_controls">
+             <item>
+              <widget class="QPushButton" name="btn_animation">
+               <property name="font">
+                <font>
+                 <pointsize>8</pointsize>
+                </font>
+               </property>
+               <property name="text">
+                <string>Make it move!</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="label_active_scalar">
+               <property name="text">
+                <string>Active scalar:</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QComboBox" name="combo_active_scalar">
+               <item>
+                <property name="text">
+                 <string>Displacement Magnitude (U)</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>Displacement Y (U2)</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>Von Mises Stress</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>Max Principal Stress</string>
+                </property>
+               </item>
+              </widget>
+             </item>
+            </layout>
            </item>
            <item row="0" column="0">
             <layout class="QHBoxLayout" name="horizontalLayout_4">

@@ -15,11 +15,13 @@ try:
     from scripts.analytics_service import load_geometry_parameters
     from scripts.analytics_table_model import DataFrameTableModel
     from scripts.ccx_results_parser import (
-        SUMMARY_COLUMNS,
         build_summary_row,
         parse_dat_modal_results,
+        parse_frd_modal_stresses,
+        parse_mesh_element_sets,
         parse_mesh_node_sets,
-        select_longitudinal_mode,
+        parse_and_select_mode,
+        summary_columns_for_specimen,
     )
 except ModuleNotFoundError:
     from ccx_solver import CCXSolverWorker
@@ -27,11 +29,13 @@ except ModuleNotFoundError:
     from analytics_service import load_geometry_parameters
     from analytics_table_model import DataFrameTableModel
     from ccx_results_parser import (
-        SUMMARY_COLUMNS,
         build_summary_row,
         parse_dat_modal_results,
+        parse_frd_modal_stresses,
+        parse_mesh_element_sets,
         parse_mesh_node_sets,
-        select_longitudinal_mode,
+        parse_and_select_mode,
+        summary_columns_for_specimen,
     )
 
 
@@ -39,19 +43,6 @@ class AnalyticsController(BaseController):
     """Controller for Tab 2: job manager and analytics dashboard."""
 
     DEFAULT_RESULTS_SUMMARY_FILENAME = "Results_Summary.xlsx"
-
-    CORE_TABLE_COLUMNS = [
-        "Model_name",
-        "Status",
-        "Number_of_nodes",
-        "Mode_Index",
-        "Frequency_Hz",
-        "YMAX_Mean_µm",
-        "YMIN_Mean_µm",
-        "Gain_Ratio",
-        "Tip_Std_µm",
-        "Base_Std_µm",
-    ]
 
     def _disconnect_plot_hover(self):
         hover_cid = getattr(self, "_plot_hover_cid", None)
@@ -249,7 +240,12 @@ class AnalyticsController(BaseController):
         if self.session.df_material is not None and not self.session.df_material.empty and "Model_name" in self.session.df_material.columns:
             material_columns = [column for column in self.session.df_material.columns if column != "Model_name"]
 
-        ordered_columns = [column for column in self.CORE_TABLE_COLUMNS if column in merged.columns]
+        core_columns = [
+            "Model_name",
+            "Status",
+            *summary_columns_for_specimen(self.session.specimen_type)[1:],
+        ]
+        ordered_columns = [column for column in core_columns if column in merged.columns]
 
         if model_count <= 1:
             varying_columns = [
@@ -277,7 +273,15 @@ class AnalyticsController(BaseController):
         if ui_df is not None and not ui_df.empty:
             ordered_columns.extend([column for column in ui_df.columns if column in merged.columns])
         else:
-            ordered_columns.extend([column for column in self.CORE_TABLE_COLUMNS if column in merged.columns])
+            ordered_columns.extend([
+                column
+                for column in [
+                    "Model_name",
+                    "Status",
+                    *summary_columns_for_specimen(self.session.specimen_type)[1:],
+                ]
+                if column in merged.columns
+            ])
 
         geometry_columns = []
         try:
@@ -307,7 +311,8 @@ class AnalyticsController(BaseController):
         return merged.loc[:, [column for column in ordered_columns if column in merged.columns]].copy()
 
     def _build_results_rows_from_disk(self):
-        table_columns = ["Model_name", "Status", *[column for column in SUMMARY_COLUMNS if column != "Model_name"]]
+        summary_columns = summary_columns_for_specimen(self.session.specimen_type)
+        table_columns = ["Model_name", "Status", *[column for column in summary_columns if column != "Model_name"]]
         if not self.session.project_dir:
             return pd.DataFrame(columns=table_columns)
 
@@ -327,7 +332,7 @@ class AnalyticsController(BaseController):
             row = {
                 "Model_name": model_name,
                 "Status": status,
-                **{column: "--" for column in SUMMARY_COLUMNS if column != "Model_name"},
+                **{column: "--" for column in summary_columns if column != "Model_name"},
             }
 
             if has_mesh:
@@ -339,14 +344,34 @@ class AnalyticsController(BaseController):
 
             if status == "Solved" and dat_path.is_file():
                 try:
-                    node_sets, node_count = parse_mesh_node_sets(str(mesh_inp_path))
+                    node_sets, node_count = parse_mesh_node_sets(
+                        str(mesh_inp_path),
+                        ("YMIN", "YMAX", "CENTER", "GAUGE_VOL_NODES"),
+                    )
                     mode_frequencies, mode_displacements = parse_dat_modal_results(str(dat_path), node_sets)
-                    metrics = select_longitudinal_mode(
+                    element_sets = parse_mesh_element_sets(str(mesh_inp_path))
+                    mode_stresses = parse_frd_modal_stresses(
+                        str(frd_path),
+                        element_sets,
+                    )
+                    metrics = parse_and_select_mode(
+                        self.session.specimen_type,
                         mode_displacements,
+                        mode_frequencies=mode_frequencies,
+                        mode_stresses=mode_stresses,
                         input_amplitude=self.session.input_amplitude,
+                        yield_strength=self.session.yield_strength,
                     )
                     if metrics is not None:
-                        row.update(build_summary_row(model_name, node_count, mode_frequencies, metrics))
+                        row.update(
+                            build_summary_row(
+                                model_name,
+                                node_count,
+                                mode_frequencies,
+                                metrics,
+                                self.session.specimen_type,
+                            )
+                        )
                 except Exception as exc:  # noqa: BLE001
                     print(f"[WARNING] Could not parse solver metrics for {model_name}: {exc}")
 
@@ -684,6 +709,7 @@ class AnalyticsController(BaseController):
             df_mesh=self.session.df_mesh,
             semantic_roles=self.session.semantic_roles,
             target_models=selected_models,
+            gauge_bounds=self.session.gauge_bounds,
         )
 
         self.session.mesh_worker.progress_updated.connect(self._set_progress_value)

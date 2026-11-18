@@ -36,6 +36,7 @@ class SolverWorker(QThread):
         df_step,
         semantic_roles,
         input_amplitude=1.0,
+        gauge_bounds=None,
     ):
         super().__init__()
         self.project_dir = project_dir
@@ -44,6 +45,7 @@ class SolverWorker(QThread):
         self.df_step = df_step
         self.semantic_roles = semantic_roles
         self.input_amplitude = input_amplitude
+        self.gauge_bounds = gauge_bounds
         self._abort_requested = False
 
     def abort(self):
@@ -105,6 +107,7 @@ class SolverWorker(QThread):
                     mesh_output_path=mesh_inp_path,
                     mesh_config=mesh_cfg,
                     semantic_roles=self.semantic_roles,
+                    gauge_bounds=self.gauge_bounds,
                     quiet=True,
                 )
                 if self._abort_requested:
@@ -156,6 +159,7 @@ class SolverWorker(QThread):
                             mesh_output_path=retry_mesh_inp_path,
                             mesh_config=retry_mesh_cfg,
                             semantic_roles=self.semantic_roles,
+                            gauge_bounds=self.gauge_bounds,
                             quiet=True,
                         )
                         solved_mesh_inp_path = retry_mesh_inp_path

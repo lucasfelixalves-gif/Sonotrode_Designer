@@ -20,6 +20,7 @@ class ProjectSession:
 
     # UI and runtime state
     semantic_roles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    gauge_bounds: Optional[list[float]] = None
     last_picked_info: Optional[dict[str, Any]] = None
     selected_result_row: Optional[dict[str, Any]] = None
     base_result_mesh: Any = None
@@ -29,6 +30,8 @@ class ProjectSession:
     current_render_status: Optional[str] = None
     available_modes_dict: dict[int, float] = field(default_factory=dict)
     input_amplitude: float = 1.0
+    specimen_type: str = "Longitudinal"
+    yield_strength: float = 300.0
 
     is_solving: bool = False
     animation_phase: float = 0.0
@@ -55,6 +58,7 @@ class ProjectSession:
         self.job_table_df = None
 
         self.semantic_roles.clear()
+        self.gauge_bounds = None
         self.last_picked_info = None
 
         self.selected_result_row = None
@@ -69,6 +73,8 @@ class ProjectSession:
         self.animation_phase = 0.0
         self.sim_start_time = 0.0
         self.input_amplitude = 1.0
+        self.specimen_type = "Longitudinal"
+        self.yield_strength = 300.0
 
         self.worker = None
         self.mesh_worker = None

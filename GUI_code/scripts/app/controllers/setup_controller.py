@@ -60,8 +60,18 @@ class SetupController(BaseController):
             self.ui.btn_run.clicked.connect(self.start_batch_solve)
         if hasattr(self.ui, "btn_assign"):
             self.ui.btn_assign.clicked.connect(self.assign_role)
+        if hasattr(self.ui, "combo_roles"):
+            self.ui.combo_roles.currentTextChanged.connect(self._on_role_changed)
         if hasattr(self.ui, "btn_assign_amplitude"):
             self.ui.btn_assign_amplitude.clicked.connect(self.assign_input_amplitude)
+        if hasattr(self.ui, "combo_specimen_type"):
+            self.ui.combo_specimen_type.currentTextChanged.connect(
+                self._on_specimen_type_changed
+            )
+        if hasattr(self.ui, "spin_yield_strength"):
+            self.ui.spin_yield_strength.valueChanged.connect(
+                self._on_yield_strength_changed
+            )
         if hasattr(self.ui, "list_geometries"):
             self.ui.list_geometries.itemClicked.connect(self._on_geometry_selected)
         if hasattr(self.ui, "btn_abort_sim"):
@@ -69,6 +79,16 @@ class SetupController(BaseController):
             self.ui.btn_abort_sim.clicked.connect(self.abort_simulation)
         if hasattr(self.ui, "btn_tetris"):
             self.ui.btn_tetris.clicked.connect(self.open_tetris)
+
+    def _reset_project_configuration(self):
+        self.session.gauge_bounds = None
+        if hasattr(self.ui, "combo_specimen_type"):
+            self.ui.combo_specimen_type.setCurrentIndex(0)
+        if hasattr(self.ui, "spin_yield_strength"):
+            self.ui.spin_yield_strength.setValue(300.0)
+
+        self.session.specimen_type = "Longitudinal"
+        self.session.yield_strength = 300.0
 
     def _ensure_plotters(self):
         if self.widgets.plotter is None and hasattr(self.ui, "frame_setup_3D"):
@@ -90,6 +110,55 @@ class SetupController(BaseController):
             except Exception as exc:  # noqa: BLE001
                 self.widgets.plotter_results = None
                 print(f"[WARNING] Could not initialize results 3D viewport: {exc}")
+
+    def _on_role_changed(self, role_name):
+        if "Gauge Section" in str(role_name):
+            self._activate_gauge_box_widget()
+            return
+
+        if self.widgets.plotter is not None:
+            try:
+                self.widgets.plotter.clear_box_widgets()
+            except Exception as exc:
+                print(f"[WARNING] Could not clear gauge-section box widget: {exc}")
+
+    def _activate_gauge_box_widget(self):
+        if self.widgets.plotter is None or not hasattr(self, "_preview_mesh"):
+            print("[WARNING] Load a setup mesh before selecting a gauge section.")
+            return
+
+        try:
+            self.widgets.plotter.disable_picking()
+            self.widgets.plotter.clear_box_widgets()
+            self._gauge_box_widget = self.widgets.plotter.add_box_widget(
+                callback=self._on_gauge_bounds_changed,
+                bounds=self._preview_mesh.bounds,
+                rotation_enabled=False,
+                color="#ff8c00",
+                interaction_event="end",
+            )
+        except Exception as exc:
+            print(f"[WARNING] Could not initialize gauge-section box widget: {exc}")
+
+    def _on_gauge_bounds_changed(self, box):
+        bounds = getattr(box, "bounds", None)
+        if bounds is None or len(bounds) != 6:
+            print("[WARNING] Gauge-section widget returned invalid bounds.")
+            return
+
+        self.session.gauge_bounds = [float(value) for value in bounds]
+        gauge_box = pv.Box(bounds=self.session.gauge_bounds)
+        self.widgets.plotter.add_mesh(
+            gauge_box,
+            name="gauge_volume_preview",
+            color="#ff8c00",
+            opacity=0.25,
+            style="wireframe",
+            line_width=2,
+            pickable=False,
+            reset_camera=False,
+        )
+        print(f"[STATE] Gauge bounds updated: {self.session.gauge_bounds}")
 
     def _ensure_project_folders(self):
         if not self.session.project_dir:
@@ -134,6 +203,7 @@ class SetupController(BaseController):
             self.load_reference_model(first_path)
 
     def _load_project_workbook(self, file_path, load_first_geometry=True):
+        self._reset_project_configuration()
         workbook_dir = os.path.dirname(file_path)
         if os.path.basename(workbook_dir) == "01_Master_Config":
             self.session.project_dir = os.path.dirname(workbook_dir)
@@ -194,6 +264,7 @@ class SetupController(BaseController):
 
         self.session.project_dir = master_folder
         self.session.master_workbook_path = None
+        self._reset_project_configuration()
         if hasattr(self.ui, "line_path"):
             self.ui.line_path.setText(master_folder)
         self.context.controllers["analytics"].initialize_job_table()
@@ -356,6 +427,7 @@ class SetupController(BaseController):
             df_step=self.session.df_step,
             semantic_roles=self.session.semantic_roles,
             input_amplitude=self.session.input_amplitude,
+            gauge_bounds=self.session.gauge_bounds,
         )
         self.session.worker.progress_updated.connect(analytics._set_progress_value)
         self.session.worker.status_updated.connect(analytics._set_status_text)
@@ -398,6 +470,14 @@ class SetupController(BaseController):
             "Amplitude Scaling Set",
             f"Physical amplitude scaling set to {amplitude_value:.6g}",
         )
+
+    def _on_specimen_type_changed(self, specimen_type):
+        self.session.specimen_type = str(specimen_type)
+        print(f"[STATE] Specimen type updated: {self.session.specimen_type}")
+
+    def _on_yield_strength_changed(self, yield_strength):
+        self.session.yield_strength = float(yield_strength)
+        print(f"[STATE] Yield strength updated: {self.session.yield_strength:.6g} MPa")
 
     def abort_simulation(self):
         if self.session.worker is None:
@@ -508,6 +588,8 @@ class SetupController(BaseController):
             show=False,
             show_message=False,
         )
+        if hasattr(self.ui, "combo_roles") and "Gauge Section" in self.ui.combo_roles.currentText():
+            self._activate_gauge_box_widget()
 
     def on_cell_picked(self, cell):
         if cell is None:

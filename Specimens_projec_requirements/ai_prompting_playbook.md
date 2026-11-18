@@ -19,7 +19,7 @@ This guide provides step-by-step instructions on how you (the human engineer) sh
   * **Files to open:** `scripts/MainWindow.ui` (if the AI can read XML/UI files) or just prompt for PyQt6 code to add. *(Note: It's often safer for you to add these manually in Qt Designer, then have the AI write the controller logic).*
 * **Step 2: State Update Prompt**
   * **Files to open:** `project_session.py`, `setup_controller.py`
-  * **Prompt to use:** *"I have added a QComboBox named `combo_specimen_type` and a QDoubleSpinBox named `spin_yield_strength` to my UI. Please update `ProjectSession` in `project_session.py` to store these variables (defaults: 'Longitudinal', 300.0). Then, update `setup_controller.py` to bind these UI elements to update the session state when changed. Add print statements so I can verify."*
+  * **Prompt to use:** *"Add a QComboBox named `combo_specimen_type` and a QDoubleSpinBox named `spin_yield_strength` to my UI. Please update `ProjectSession` in `project_session.py` to store these variables (defaults: 'Longitudinal', 300.0). Then, update `setup_controller.py` to bind these UI elements to update the session state when changed. Add print statements so I can verify."*
 * **Verification:** Run `main.py`. Change the dropdown. Look at the terminal to confirm the state updated.
 
 ---

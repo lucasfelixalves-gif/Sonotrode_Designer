@@ -8,20 +8,56 @@ summary metrics for UI and report export workflows.
 import math
 import re
 import statistics
-from typing import Dict, Iterable, Set, Tuple
+from typing import Dict, Iterable, Optional, Set, Tuple
 
 
-SUMMARY_COLUMNS = [
+COMMON_SUMMARY_COLUMNS = [
     "Model_name",
     "Number_of_nodes",
     "Mode_Index",
     "Frequency_Hz",
-    "YMAX_Mean_µm",
-    "YMIN_Mean_µm",
-    "Gain_Ratio",
-    "Tip_Std_µm",
-    "Base_Std_µm",
 ]
+
+SUMMARY_COLUMNS_BY_SPECIMEN = {
+    "Longitudinal Specimen": [
+        "Base_Disp_µm",
+        "Tip_Disp_µm",
+        "Displacement_Ratio",
+        "Max_Stress [MPa]",
+        "Stress_Gain [MPa/µm]",
+        "Yield_Status",
+    ],
+    "Disc Specimen (Biaxial)": [
+        "Base_Disp_µm",
+        "Center_Disp_Z_µm",
+        "Max_Stress [MPa]",
+        "Stress_Gain [MPa/µm]",
+        "Yield_Status",
+    ],
+    "Flat/Thin-Walled Specimen": [
+        "Base_Disp_µm",
+        "Max_Stress [MPa]",
+        "Stress_Gain [MPa/µm]",
+        "Yield_Status",
+    ],
+}
+
+
+def summary_columns_for_specimen(specimen_type):
+    """Return the analytics columns for the selected specimen type."""
+    normalized = str(specimen_type or "Longitudinal Specimen").strip()
+    if normalized == "Longitudinal":
+        normalized = "Longitudinal Specimen"
+    return [
+        *COMMON_SUMMARY_COLUMNS,
+        *SUMMARY_COLUMNS_BY_SPECIMEN.get(
+            normalized,
+            SUMMARY_COLUMNS_BY_SPECIMEN["Longitudinal Specimen"],
+        ),
+    ]
+
+
+SUMMARY_COLUMNS = summary_columns_for_specimen("Longitudinal Specimen")
 
 _FLOAT_RE = r"[+-]?(?:\d+\.?\d*|\d*\.\d+)(?:[Ee][+-]?\d+)?"
 _FREQ_ROW_RE = re.compile(
@@ -31,9 +67,13 @@ _EIGEN_MODE_RE = re.compile(
     r"E\s*I\s*G\s*E\s*N\s*V\s*A\s*L\s*U\s*E\s*N\s*U\s*M\s*B\s*E\s*R\s*(\d+)",
     re.IGNORECASE,
 )
+_FRD_MODE_RE = re.compile(r"1P\s*MODE\s+(-?\d+)", re.IGNORECASE)
 _DISP_SET_RE = re.compile(
     r"displacements\s*\(vx,vy,vz\)\s*for\s*set\s+([A-Za-z0-9_]+)",
     re.IGNORECASE,
+)
+_FRD_FLOAT_RE = re.compile(
+    r"[+-]?(?:\d+\.?\d*|\d*\.\d+)(?:[EeDd][+-]?\d+)?"
 )
 
 
@@ -144,6 +184,63 @@ def parse_mesh_node_sets(mesh_path: str, set_names: Iterable[str] = ("YMIN", "YM
     return node_sets, total_nodes
 
 
+def parse_mesh_element_sets(
+    mesh_path: str,
+    set_names: Iterable[str] = ("GAUGE_VOL",),
+) -> Dict[str, Set[int]]:
+    """Return element IDs from requested ELSET cards in an INP file."""
+    targets = {str(name).strip().upper() for name in set_names}
+    element_sets = {name: set() for name in targets}
+    active_set = None
+    active_generate = False
+
+    with open(mesh_path, "r", encoding="utf-8", errors="ignore") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            if line.startswith("*"):
+                upper = line.upper()
+                active_set = None
+                active_generate = False
+                if upper.startswith("*ELSET"):
+                    match = re.search(r"\bELSET\s*=\s*([^,\s]+)", upper)
+                    if match:
+                        candidate = match.group(1).strip().upper()
+                        if candidate in targets:
+                            active_set = candidate
+                            active_generate = "GENERATE" in upper
+                continue
+
+            if active_set is None:
+                continue
+
+            numbers = []
+            for token in line.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                try:
+                    numbers.append(int(token))
+                except ValueError:
+                    continue
+
+            if active_generate:
+                for idx in range(0, len(numbers), 3):
+                    chunk = numbers[idx: idx + 3]
+                    if len(chunk) != 3:
+                        continue
+                    start, end, step = chunk
+                    if step == 0:
+                        continue
+                    element_sets[active_set].update(range(start, end + (1 if step > 0 else -1), step))
+            else:
+                element_sets[active_set].update(numbers)
+
+    return element_sets
+
+
 def parse_dat_modal_results(dat_path: str, node_sets: Dict[str, Set[int]]):
     """Return frequency table and Y-displacements per mode for requested node sets."""
     mode_frequencies = {}
@@ -194,6 +291,124 @@ def parse_dat_modal_results(dat_path: str, node_sets: Dict[str, Set[int]]):
             mode_displacements[current_mode][current_set].append((ux, uy, uz))
 
     return mode_frequencies, mode_displacements
+
+
+def _stress_values_to_metrics(values):
+    if len(values) < 6:
+        return None
+
+    sxx, syy, szz, sxy, sxz, syz = values[-6:]
+    von_mises = math.sqrt(
+        0.5 * (
+            (sxx - syy) ** 2
+            + (syy - szz) ** 2
+            + (szz - sxx) ** 2
+            + 6.0 * (sxy**2 + sxz**2 + syz**2)
+        )
+    )
+    principal = _max_principal_stress(sxx, syy, szz, sxy, sxz, syz)
+
+    return {"von_mises": von_mises, "max_principal": principal}
+
+
+def _max_principal_stress(sxx, syy, szz, sxy, sxz, syz):
+    """Return the largest eigenvalue of a symmetric 3x3 stress tensor."""
+    off_diagonal = sxy**2 + sxz**2 + syz**2
+    if off_diagonal <= 1e-30:
+        return max(sxx, syy, szz)
+
+    mean = (sxx + syy + szz) / 3.0
+    centered_norm = (
+        (sxx - mean) ** 2
+        + (syy - mean) ** 2
+        + (szz - mean) ** 2
+        + 2.0 * off_diagonal
+    )
+    scale = math.sqrt(centered_norm / 6.0)
+    if scale <= 1e-30:
+        return mean
+
+    b11 = (sxx - mean) / scale
+    b22 = (syy - mean) / scale
+    b33 = (szz - mean) / scale
+    b12 = sxy / scale
+    b13 = sxz / scale
+    b23 = syz / scale
+    determinant = (
+        b11 * b22 * b33
+        + 2.0 * b12 * b13 * b23
+        - b11 * b23**2
+        - b22 * b13**2
+        - b33 * b12**2
+    ) / 2.0
+    determinant = max(-1.0, min(1.0, determinant))
+    angle = math.acos(determinant) / 3.0
+    eigenvalues = (
+        mean + 2.0 * scale * math.cos(angle),
+        mean + 2.0 * scale * math.cos(angle + 2.0 * math.pi / 3.0),
+        mean + 2.0 * scale * math.cos(angle + 4.0 * math.pi / 3.0),
+    )
+    return max(eigenvalues)
+
+
+def parse_frd_modal_stresses(
+    frd_path: str,
+    element_sets: Optional[Dict[str, Set[int]]] = None,
+):
+    """Parse modal element stresses from FRD STRESS blocks.
+
+    The returned mapping is ``mode -> list[stress metric dict]``. If an ELSET is
+    supplied, only element IDs in that set are included.
+    """
+    selected_elements = set((element_sets or {}).get("GAUGE_VOL", set()))
+    mode_stresses = {}
+    current_mode = None
+    reading_stress = False
+
+    with open(frd_path, "r", encoding="utf-8", errors="ignore") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            mode_match = _FRD_MODE_RE.search(line)
+            if mode_match:
+                mode_index = int(mode_match.group(1))
+                current_mode = mode_index
+                mode_stresses.setdefault(current_mode, [])
+                reading_stress = False
+                continue
+
+            if current_mode is None:
+                continue
+            if line.startswith("-4"):
+                reading_stress = "STRESS" in line.upper()
+                continue
+            if not reading_stress:
+                continue
+            if line.startswith("-3"):
+                reading_stress = False
+                continue
+            if not line.startswith("-1"):
+                continue
+
+            parts = line.split()
+            if len(parts) < 8:
+                continue
+            try:
+                element_id = int(parts[1])
+            except ValueError:
+                continue
+            if selected_elements and element_id not in selected_elements:
+                continue
+
+            values = []
+            for token in parts[2:]:
+                match = _FRD_FLOAT_RE.fullmatch(token)
+                if match:
+                    values.append(_safe_float(match.group(0).replace("D", "E").replace("d", "E")))
+            stress_metrics = _stress_values_to_metrics(values)
+            if stress_metrics is not None:
+                mode_stresses[current_mode].append(stress_metrics)
+
+    return mode_stresses
 
 def select_longitudinal_mode( 
     mode_displacements,
@@ -343,22 +558,125 @@ def select_longitudinal_mode(
     selected["tip_std"] = tip_std
     selected["base_std"] = base_std
     selected["gain_ratio"] = gain_ratio
+    selected["_raw_base_mean"] = raw_base_mean
+    selected["_scaling_factor"] = micrometer_scale
 
     return selected
 
 
-def build_summary_row(model_name, node_count, mode_frequencies, metrics):
-    """Build one row matching the Results_Summary.xlsx schema."""
+def _mean_component(values, component_index):
+    if not values:
+        return 0.0
+    return statistics.fmean(
+        _safe_float(value[component_index], 0.0)
+        for value in values
+        if hasattr(value, "__getitem__") and len(value) > component_index
+    )
+
+
+def _average_gauge_stress(mode_stresses, mode_index):
+    values = mode_stresses.get(mode_index, []) if mode_stresses else []
+    numeric_values = []
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get("von_mises")
+        numeric = _safe_float(value, math.nan)
+        if not math.isnan(numeric):
+            numeric_values.append(numeric)
+    return statistics.fmean(numeric_values) if numeric_values else math.nan
+
+
+def _apply_stress_metrics(metrics, mode_stresses, input_amplitude, yield_strength):
+    raw_base_mean = _safe_float(metrics.get("_raw_base_mean"), 0.0)
+    raw_stress = _average_gauge_stress(mode_stresses, metrics["mode_index"])
+    if math.isnan(raw_stress):
+        metrics["max_stress"] = math.nan
+        metrics["stress_gain"] = math.nan
+        metrics["yield_status"] = "Unknown"
+        return metrics
+
+    amplitude = abs(_safe_float(input_amplitude, 1.0))
+    if abs(raw_base_mean) > 1e-12:
+        stress_gain = abs(raw_stress / raw_base_mean)
+        max_stress = stress_gain * amplitude
+    else:
+        stress_gain = math.nan
+        max_stress = math.nan
+
+    metrics["max_stress"] = max_stress
+    metrics["stress_gain"] = stress_gain
+    metrics["yield_status"] = (
+        "Pass"
+        if not math.isnan(max_stress)
+        and max_stress < _safe_float(yield_strength, 300.0)
+        else "Fail"
+        if not math.isnan(max_stress)
+        else "Unknown"
+    )
+    return metrics
+
+
+def parse_and_select_mode(
+    specimen_type,
+    mode_displacements,
+    mode_frequencies=None,
+    mode_stresses=None,
+    input_amplitude=1.0,
+    yield_strength=300.0,
+):
+    """Route modal selection and stress validation by specimen type."""
+    normalized = str(specimen_type or "Longitudinal Specimen").strip()
+    if normalized == "Longitudinal":
+        normalized = "Longitudinal Specimen"
+
+    metrics = select_longitudinal_mode(
+        mode_displacements,
+        input_amplitude=input_amplitude,
+    )
+
+    if metrics is None:
+        return None
+
+    metrics["base_disp"] = metrics["ymin_mean"]
+    metrics["tip_disp"] = metrics["ymax_mean"]
+    metrics["displacement_ratio"] = metrics["gain_ratio"]
+    if normalized == "Disc Specimen (Biaxial)":
+        selected_data = mode_displacements.get(metrics["mode_index"], {})
+        center_data = (
+            selected_data.get("CENTER", [])
+            or selected_data.get("GAUGE_VOL_NODES", [])
+        )
+        metrics["center_disp_z"] = _mean_component(center_data, 2) * metrics["_scaling_factor"]
+
+    _apply_stress_metrics(metrics, mode_stresses, input_amplitude, yield_strength)
+    metrics["specimen_type"] = normalized
+    return metrics
+
+
+def build_summary_row(
+    model_name,
+    node_count,
+    mode_frequencies,
+    metrics,
+    specimen_type="Longitudinal Specimen",
+):
+    """Build one row matching the selected specimen summary schema."""
     mode_idx = int(metrics["mode_index"])
-    return {
+    row = {
         "Model_name": model_name,
         "Number_of_nodes": int(node_count),
         "Mode_Index": mode_idx,
         "Frequency_Hz": _safe_float(mode_frequencies.get(mode_idx, math.nan), math.nan),
-        "YMAX_Mean_µm": _safe_float(metrics["ymax_mean"], math.nan),
-        "YMIN_Mean_µm": _safe_float(metrics["ymin_mean"], math.nan),
-        "Gain_Ratio": _safe_float(metrics["gain_ratio"], math.nan),
-        "Tip_Std_µm": _safe_float(metrics["tip_std"], math.nan),
-        "Base_Std_µm": _safe_float(metrics["base_std"], math.nan),
         "_Ranked_Metrics": metrics.get("_all_ranked_modes", []),
     }
+    normalized = str(specimen_type or metrics.get("specimen_type", "Longitudinal Specimen"))
+    row["Base_Disp_µm"] = _safe_float(metrics.get("base_disp"), math.nan)
+    if normalized == "Longitudinal Specimen":
+        row["Tip_Disp_µm"] = _safe_float(metrics.get("tip_disp"), math.nan)
+        row["Displacement_Ratio"] = _safe_float(metrics.get("displacement_ratio"), math.nan)
+    elif normalized == "Disc Specimen (Biaxial)":
+        row["Center_Disp_Z_µm"] = _safe_float(metrics.get("center_disp_z"), math.nan)
+    row["Max_Stress [MPa]"] = _safe_float(metrics.get("max_stress"), math.nan)
+    row["Stress_Gain [MPa/µm]"] = _safe_float(metrics.get("stress_gain"), math.nan)
+    row["Yield_Status"] = str(metrics.get("yield_status", "Unknown"))
+    return row
