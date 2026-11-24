@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -29,6 +30,9 @@ class ProjectSession:
     current_render_status: Optional[str] = None
     available_modes_dict: dict[int, float] = field(default_factory=dict)
     input_amplitude: float = 1.0
+    specimen_type: str = "Longitudinal Specimen"
+    yield_strength: float = 300.0
+    active_scalar: str = "Displacement Magnitude (U)"
 
     is_solving: bool = False
     animation_phase: float = 0.0
@@ -41,6 +45,14 @@ class ProjectSession:
     table_model: Any = None
     plotter: Any = None
     plotter_results: Any = None
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "yield_strength":
+            numeric_value = float(value)
+            if not math.isfinite(numeric_value) or numeric_value < 0.0:
+                raise ValueError("yield_strength must be a finite non-negative number.")
+            value = numeric_value
+        super().__setattr__(name, value)
 
     def clear_project_data(self) -> None:
         """Reset project-dependent data while keeping the session object alive."""
@@ -69,6 +81,9 @@ class ProjectSession:
         self.animation_phase = 0.0
         self.sim_start_time = 0.0
         self.input_amplitude = 1.0
+        self.specimen_type = "Longitudinal Specimen"
+        self.yield_strength = 300.0
+        self.active_scalar = "Displacement Magnitude (U)"
 
         self.worker = None
         self.mesh_worker = None

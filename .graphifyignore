@@ -1,0 +1,17 @@
+01_Master_Config/
+02_Geometry_STEP/
+03_Meshes_INP/
+04_Results_CCX/
+05_Reports/
+bin/
+graphify-out/
+__pycache__/
+*.vtk
+*.frd
+*.dat
+*.inp
+*.step
+*.stp
+*.xlsx
+*.dll
+*.exe

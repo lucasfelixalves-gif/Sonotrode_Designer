@@ -70,6 +70,37 @@ class SetupController(BaseController):
         if hasattr(self.ui, "btn_tetris"):
             self.ui.btn_tetris.clicked.connect(self.open_tetris)
 
+        self._sync_specimen_controls_from_session()
+        if hasattr(self.ui, "combo_specimen_type"):
+            self.ui.combo_specimen_type.currentTextChanged.connect(self._on_specimen_type_changed)
+        if hasattr(self.ui, "spin_yield_strength"):
+            self.ui.spin_yield_strength.valueChanged.connect(self._on_yield_strength_changed)
+
+    def _sync_specimen_controls_from_session(self) -> None:
+        if hasattr(self.ui, "combo_specimen_type"):
+            self.ui.combo_specimen_type.blockSignals(True)
+            self.ui.combo_specimen_type.setCurrentText(self.session.specimen_type)
+            self.ui.combo_specimen_type.blockSignals(False)
+        if hasattr(self.ui, "spin_yield_strength"):
+            self.ui.spin_yield_strength.blockSignals(True)
+            self.ui.spin_yield_strength.setValue(float(self.session.yield_strength))
+            self.ui.spin_yield_strength.blockSignals(False)
+
+    def _reset_session_for_project_change(self) -> None:
+        self.session.clear_project_data()
+        self._sync_specimen_controls_from_session()
+        results_controller = self.context.controllers.get("results")
+        if results_controller is not None and hasattr(results_controller, "sync_active_scalar_from_session"):
+            results_controller.sync_active_scalar_from_session()
+
+    def _on_specimen_type_changed(self, text: str) -> None:
+        self.session.specimen_type = text
+        print(f"[SetupController] Specimen type updated to: {self.session.specimen_type}")
+
+    def _on_yield_strength_changed(self, value: float) -> None:
+        self.session.yield_strength = float(value)
+        print(f"[SetupController] Yield strength updated to: {self.session.yield_strength} MPa")
+
     def _ensure_plotters(self):
         if self.widgets.plotter is None and hasattr(self.ui, "frame_setup_3D"):
             layout = QVBoxLayout(self.ui.frame_setup_3D)
@@ -192,6 +223,7 @@ class SetupController(BaseController):
         ):
             os.makedirs(os.path.join(master_folder, subfolder), exist_ok=True)
 
+        self._reset_session_for_project_change()
         self.session.project_dir = master_folder
         self.session.master_workbook_path = None
         if hasattr(self.ui, "line_path"):
@@ -268,6 +300,7 @@ class SetupController(BaseController):
         if not file_path:
             return
 
+        self._reset_session_for_project_change()
         self._load_project_workbook(file_path, load_first_geometry=True)
         self.context.controllers["analytics"].load_analytics_data()
 

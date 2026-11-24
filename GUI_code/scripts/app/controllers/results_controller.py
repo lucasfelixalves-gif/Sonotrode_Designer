@@ -52,6 +52,20 @@ class ResultsController(BaseController):
         if hasattr(self.ui, "label_mode_data"):
             self.ui.label_mode_data.setText("Mode nº: -- | Frequency: -- Hz")
 
+        self.sync_active_scalar_from_session()
+        if hasattr(self.ui, "combo_active_scalar"):
+            self.ui.combo_active_scalar.currentTextChanged.connect(self._on_active_scalar_changed)
+
+    def sync_active_scalar_from_session(self) -> None:
+        if hasattr(self.ui, "combo_active_scalar"):
+            self.ui.combo_active_scalar.blockSignals(True)
+            self.ui.combo_active_scalar.setCurrentText(self.session.active_scalar)
+            self.ui.combo_active_scalar.blockSignals(False)
+
+    def _on_active_scalar_changed(self, text: str) -> None:
+        self.session.active_scalar = text
+        print(f"[ResultsController] Active scalar set to: {self.session.active_scalar}")
+
     def _get_render_button(self):
         if hasattr(self.ui, "btn_render_3D"):
             return self.ui.btn_render_3D
