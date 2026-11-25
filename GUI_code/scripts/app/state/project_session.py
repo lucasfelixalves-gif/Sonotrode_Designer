@@ -1,8 +1,42 @@
 import math
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import pandas as pd
+
+
+def _normalize_gauge_bounds(bounds: Sequence[float]) -> list[float]:
+    """Validate and normalize an AABB into [xmin, xmax, ymin, ymax, zmin, zmax]."""
+    if bounds is None or isinstance(bounds, (str, bytes)):
+        raise ValueError("gauge_bounds must be a 6-element sequence of finite numbers.")
+    try:
+        items = list(bounds)
+    except TypeError as exc:
+        raise ValueError("gauge_bounds must be a 6-element sequence of finite numbers.") from exc
+
+    if len(items) != 6:
+        raise ValueError(f"gauge_bounds must contain exactly 6 values, got {len(items)}.")
+
+    vals: list[float] = []
+    for item in items:
+        try:
+            num = float(item)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"gauge_bounds entry {item!r} is not numeric.") from exc
+        if not math.isfinite(num):
+            raise ValueError("gauge_bounds entries must be finite numbers.")
+        vals.append(num)
+
+    xmin, xmax = sorted((vals[0], vals[1]))
+    ymin, ymax = sorted((vals[2], vals[3]))
+    zmin, zmax = sorted((vals[4], vals[5]))
+
+    if not (xmin < xmax and ymin < ymax and zmin < zmax):
+        raise ValueError(
+            "gauge_bounds must have strictly positive extents along X, Y, and Z."
+        )
+
+    return [xmin, xmax, ymin, ymax, zmin, zmax]
 
 
 @dataclass
@@ -33,6 +67,7 @@ class ProjectSession:
     specimen_type: str = "Longitudinal Specimen"
     yield_strength: float = 300.0
     active_scalar: str = "Displacement Magnitude (U)"
+    gauge_bounds: Optional[list[float]] = None
 
     is_solving: bool = False
     animation_phase: float = 0.0
@@ -52,7 +87,15 @@ class ProjectSession:
             if not math.isfinite(numeric_value) or numeric_value < 0.0:
                 raise ValueError("yield_strength must be a finite non-negative number.")
             value = numeric_value
+        elif name == "gauge_bounds" and value is not None:
+            value = _normalize_gauge_bounds(value)
         super().__setattr__(name, value)
+
+    def set_gauge_bounds(self, bounds: Sequence[float]) -> list[float]:
+        """Validate, normalize, and store AABB bounds [xmin, xmax, ymin, ymax, zmin, zmax]."""
+        normalized = _normalize_gauge_bounds(bounds)
+        self.gauge_bounds = normalized
+        return list(normalized)
 
     def clear_project_data(self) -> None:
         """Reset project-dependent data while keeping the session object alive."""
@@ -84,6 +127,7 @@ class ProjectSession:
         self.specimen_type = "Longitudinal Specimen"
         self.yield_strength = 300.0
         self.active_scalar = "Displacement Magnitude (U)"
+        self.gauge_bounds = None
 
         self.worker = None
         self.mesh_worker = None

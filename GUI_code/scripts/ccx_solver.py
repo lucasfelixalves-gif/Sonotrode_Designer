@@ -190,6 +190,28 @@ def _extract_nset_names(mesh_content):
     return names
 
 
+def _extract_elset_names(mesh_content):
+    names = set()
+    for line in mesh_content.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("*"):
+            continue
+        upper = stripped.upper()
+        if not upper.startswith("*ELSET"):
+            continue
+        match = re.search(r"\bELSET\s*=\s*([^,\s]+)", upper)
+        if match:
+            names.add(match.group(1).strip().upper())
+    return names
+
+
+def _has_gauge_volume_sets(mesh_content):
+    return (
+        "GAUGE_VOL" in _extract_elset_names(mesh_content)
+        or "GAUGE_VOL_NODES" in _extract_nset_names(mesh_content)
+    )
+
+
 def _append_bbox_nsets_if_missing(mesh_content, required_names):
     """Append Y-extrema NSETs when required sets are missing from the mesh deck."""
     required = [name.strip().upper() for name in required_names if str(name).strip()]
@@ -265,6 +287,7 @@ def build_frequency_deck(
     deck_output_path,
     material_config,
     step_config,
+    include_stress_output=True,
 ):
     """Create a final frequency deck by appending physics cards to mesh content."""
     material_config = material_config or {}
@@ -359,6 +382,10 @@ def build_frequency_deck(
 
     lines.append("*NODE FILE")
     lines.append(",".join(output_vars))
+
+    if include_stress_output or _has_gauge_volume_sets(mesh_content):
+        lines.append("*EL FILE")
+        lines.append("S")
 
     if output_nsets:
         for nset in output_nsets:

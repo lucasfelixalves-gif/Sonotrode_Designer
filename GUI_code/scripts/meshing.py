@@ -7,12 +7,110 @@ Canonical responsibility of this module:
 - Export one CalculiX INP mesh
 """
 
+import math
 import os
 import tempfile
 from pathlib import Path
 
 import gmsh
 import meshio
+import numpy as np
+
+
+def _normalize_gauge_bounds(gauge_bounds):
+    """Validate and normalize AABB bounds into [xmin, xmax, ymin, ymax, zmin, zmax]."""
+    if gauge_bounds is None or isinstance(gauge_bounds, (str, bytes)):
+        raise ValueError("gauge_bounds must be a 6-element sequence of finite numbers.")
+    try:
+        items = list(gauge_bounds)
+    except TypeError as exc:
+        raise ValueError("gauge_bounds must be a 6-element sequence of finite numbers.") from exc
+
+    if len(items) != 6:
+        raise ValueError(f"gauge_bounds must contain exactly 6 values, got {len(items)}.")
+
+    vals = []
+    for item in items:
+        try:
+            num = float(item)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"gauge_bounds entry {item!r} is not numeric.") from exc
+        if not math.isfinite(num):
+            raise ValueError("gauge_bounds entries must be finite numbers.")
+        vals.append(num)
+
+    xmin, xmax = sorted((vals[0], vals[1]))
+    ymin, ymax = sorted((vals[2], vals[3]))
+    zmin, zmax = sorted((vals[4], vals[5]))
+    if not (xmin < xmax and ymin < ymax and zmin < zmax):
+        raise ValueError("gauge_bounds must have strictly positive extents along X, Y, and Z.")
+
+    return [xmin, xmax, ymin, ymax, zmin, zmax]
+
+
+def select_elements_in_bounds(
+    node_coords: np.ndarray,
+    node_ids: np.ndarray,
+    element_conn: np.ndarray,
+    element_ids: np.ndarray,
+    gauge_bounds: list[float],
+) -> tuple[list[int], list[int]]:
+    """Return sorted 1-based (selected_element_ids, selected_node_ids) inside gauge_bounds."""
+    xmin, xmax, ymin, ymax, zmin, zmax = _normalize_gauge_bounds(gauge_bounds)
+
+    coords = np.asarray(node_coords, dtype=float)
+    nids = np.asarray(node_ids, dtype=int)
+    conn = np.asarray(element_conn, dtype=int)
+    eids = np.asarray(element_ids, dtype=int)
+
+    if coords.size == 0 or nids.size == 0 or conn.size == 0 or eids.size == 0:
+        return ([], [])
+
+    centroids = coords[conn].mean(axis=1)
+    mask = (
+        (centroids[:, 0] >= xmin)
+        & (centroids[:, 0] <= xmax)
+        & (centroids[:, 1] >= ymin)
+        & (centroids[:, 1] <= ymax)
+        & (centroids[:, 2] >= zmin)
+        & (centroids[:, 2] <= zmax)
+    )
+
+    if not np.any(mask):
+        return ([], [])
+
+    selected_element_ids = sorted(int(e) for e in np.unique(eids[mask]))
+    selected_node_indices = np.unique(conn[mask].ravel())
+    selected_node_ids = sorted(int(n) for n in np.unique(nids[selected_node_indices]))
+    return (selected_element_ids, selected_node_ids)
+
+
+def format_abaqus_set_block(
+    keyword: str,
+    name: str,
+    ids: list[int],
+    per_line: int = 16,
+) -> str:
+    """Format *ELSET or *NSET block with <=16 comma-separated IDs per line."""
+    per_line_int = int(per_line)
+    if per_line_int < 1 or per_line_int > 16:
+        raise ValueError(f"per_line must be between 1 and 16, got {per_line!r}.")
+
+    id_list = [int(i) for i in ids]
+    if not id_list:
+        return ""
+
+    kw = str(keyword).strip().upper()
+    if not kw.startswith("*"):
+        kw = f"*{kw}"
+    param = kw.lstrip("*")
+    set_name = str(name).strip()
+
+    lines = [f"{kw}, {param}={set_name}"]
+    for start in range(0, len(id_list), per_line_int):
+        chunk = id_list[start: start + per_line_int]
+        lines.append(", ".join(str(i) for i in chunk))
+    return "\n".join(lines)
 
 
 def _as_float(value, default):
@@ -223,7 +321,13 @@ def _is_surface_cell(cell_type):
     return cell_type.startswith(("triangle", "quad"))
 
 
-def _convert_msh_to_volume_inp(msh_path, inp_path, expected_element_order=2):
+def _convert_msh_to_volume_inp(
+    msh_path,
+    inp_path,
+    expected_element_order=2,
+    gauge_bounds=None,
+    strict_gauge_bounds=False,
+):
     mesh = meshio.read(msh_path)
 
     kept_cells = []
@@ -293,6 +397,63 @@ def _convert_msh_to_volume_inp(msh_path, inp_path, expected_element_order=2):
     if nset_lines:
         content = content.rstrip() + "\n" + "\n".join(nset_lines) + "\n"
 
+    if gauge_bounds is not None:
+        norm_bounds = _normalize_gauge_bounds(gauge_bounds)
+        node_coords = np.asarray(volume_mesh.points, dtype=float)
+        node_ids = np.arange(1, len(node_coords) + 1, dtype=int)
+
+        gauge_elem_ids = set()
+        gauge_node_ids = set()
+        eid_offset = 1
+        for block in kept_cells:
+            block_len = len(block.data)
+            if block_len == 0:
+                continue
+            block_eids = np.arange(eid_offset, eid_offset + block_len, dtype=int)
+            sel_elems, sel_nodes = select_elements_in_bounds(
+                node_coords=node_coords,
+                node_ids=node_ids,
+                element_conn=np.asarray(block.data, dtype=int),
+                element_ids=block_eids,
+                gauge_bounds=norm_bounds,
+            )
+            gauge_elem_ids.update(sel_elems)
+            gauge_node_ids.update(sel_nodes)
+            eid_offset += block_len
+
+        if gauge_elem_ids:
+            elset_block = format_abaqus_set_block(
+                "*ELSET", "GAUGE_VOL", sorted(gauge_elem_ids), per_line=16
+            )
+            nset_block = format_abaqus_set_block(
+                "*NSET", "GAUGE_VOL_NODES", sorted(gauge_node_ids), per_line=16
+            )
+            extra_blocks = [b for b in (elset_block, nset_block) if b]
+            if extra_blocks:
+                content = content.rstrip() + "\n" + "\n".join(extra_blocks) + "\n"
+        else:
+            if valid_node_ids:
+                active_pts = node_coords[sorted(valid_node_ids)]
+            else:
+                active_pts = node_coords
+            if len(active_pts) > 0:
+                mins = active_pts.min(axis=0)
+                maxs = active_pts.max(axis=0)
+                mesh_bounds = [
+                    float(mins[0]), float(maxs[0]),
+                    float(mins[1]), float(maxs[1]),
+                    float(mins[2]), float(maxs[2]),
+                ]
+            else:
+                mesh_bounds = []
+            msg = (
+                f"[meshing][WARNING] No volume elements matched gauge_bounds={norm_bounds}; "
+                f"actual mesh bounds={mesh_bounds}. Skipping GAUGE_VOL/GAUGE_VOL_NODES."
+            )
+            if strict_gauge_bounds:
+                raise ValueError(msg)
+            print(msg)
+
     with open(inp_path, "w", encoding="utf-8") as f:
         f.write(content)
 
@@ -303,6 +464,8 @@ def mesh_step_to_inp(
     mesh_output_path,
     mesh_config,
     semantic_roles=None,
+    gauge_bounds=None,
+    strict_gauge_bounds=False,
     quiet=True,
 ):
     """Generate a 3D second-order mesh INP for one STEP model.
@@ -312,6 +475,8 @@ def mesh_step_to_inp(
         mesh_output_path: Absolute output path for generated INP mesh.
         mesh_config: Dictionary containing Characteristic_length_min/max.
         semantic_roles: Role->reference centroid mapping from GUI picking.
+        gauge_bounds: Optional AABB [xmin, xmax, ymin, ymax, zmin, zmax] for GAUGE_VOL.
+        strict_gauge_bounds: If True, raise ValueError when 0 elements match gauge_bounds.
         quiet: If True, suppress Gmsh terminal output.
 
     Returns:
@@ -381,6 +546,8 @@ def mesh_step_to_inp(
                 msh_tmp_path,
                 mesh_output_path,
                 expected_element_order=element_order,
+                gauge_bounds=gauge_bounds,
+                strict_gauge_bounds=strict_gauge_bounds,
             )
         finally:
             if os.path.isfile(msh_tmp_path):

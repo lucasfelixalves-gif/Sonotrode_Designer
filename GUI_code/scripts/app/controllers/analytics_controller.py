@@ -684,6 +684,7 @@ class AnalyticsController(BaseController):
             df_mesh=self.session.df_mesh,
             semantic_roles=self.session.semantic_roles,
             target_models=selected_models,
+            gauge_bounds=list(self.session.gauge_bounds) if self.session.gauge_bounds is not None else None,
         )
 
         self.session.mesh_worker.progress_updated.connect(self._set_progress_value)

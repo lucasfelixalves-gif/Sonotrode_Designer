@@ -6,9 +6,33 @@ import pandas as pd
 import pyvista as pv
 from pyvistaqt import QtInteractor
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QInputDialog, QListWidgetItem, QMessageBox, QVBoxLayout
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import QFileDialog, QInputDialog, QListWidgetItem, QMenu, QMessageBox, QVBoxLayout
 
 from .base_controller import BaseController
+
+
+GAUGE_ROLE_NAME = "Gauge Section (Stress Harvesting)"
+GAUGE_OVERLAY_ACTOR_NAME = "gauge_vol_overlay"
+GAUGE_LIST_ITEM_TAG = "__GAUGE_VOLUME__"
+
+
+def compute_initial_gauge_bounds(mesh_bounds, existing_bounds=None, fraction: float = 0.4) -> list[float]:
+    """Return saved gauge bounds or a centered sub-box spanning `fraction` of mesh_bounds."""
+    if existing_bounds is not None and len(existing_bounds) == 6:
+        return [float(v) for v in existing_bounds]
+
+    xmin, xmax, ymin, ymax, zmin, zmax = (float(v) for v in mesh_bounds)
+    cx = 0.5 * (xmin + xmax)
+    cy = 0.5 * (ymin + ymax)
+    cz = 0.5 * (zmin + zmax)
+
+    half_frac = 0.5 * float(fraction)
+    hx = max((xmax - xmin) * half_frac, 1e-3)
+    hy = max((ymax - ymin) * half_frac, 1e-3)
+    hz = max((zmax - zmin) * half_frac, 1e-3)
+
+    return [cx - hx, cx + hx, cy - hy, cy + hy, cz - hz, cz + hz]
 
 
 MATERIAL_COLUMN_ALIASES = {
@@ -49,6 +73,9 @@ class SetupController(BaseController):
 
     def bind(self):
         self.tetris_window = None
+        self._gauge_selection_mode = False
+        self._pending_gauge_bounds = None
+        self._suppress_initial_box_callback = False
 
         if hasattr(self.ui, "btn_new_project"):
             self.ui.btn_new_project.clicked.connect(self.create_new_project)
@@ -75,6 +102,14 @@ class SetupController(BaseController):
             self.ui.combo_specimen_type.currentTextChanged.connect(self._on_specimen_type_changed)
         if hasattr(self.ui, "spin_yield_strength"):
             self.ui.spin_yield_strength.valueChanged.connect(self._on_yield_strength_changed)
+        if hasattr(self.ui, "combo_roles"):
+            self.ui.combo_roles.currentTextChanged.connect(self._on_role_selection_changed)
+        if hasattr(self.ui, "list_roles"):
+            self.ui.list_roles.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.ui.list_roles.customContextMenuRequested.connect(self._on_roles_context_menu)
+            self._roles_delete_shortcut = QShortcut(QKeySequence(Qt.Key_Delete), self.ui.list_roles)
+            self._roles_delete_shortcut.setContext(Qt.WidgetShortcut)
+            self._roles_delete_shortcut.activated.connect(self._on_roles_delete_pressed)
 
     def _sync_specimen_controls_from_session(self) -> None:
         if hasattr(self.ui, "combo_specimen_type"):
@@ -88,10 +123,180 @@ class SetupController(BaseController):
 
     def _reset_session_for_project_change(self) -> None:
         self.session.clear_project_data()
+        self._pending_gauge_bounds = None
+        self._gauge_selection_mode = False
+        if hasattr(self.ui, "combo_roles"):
+            self.ui.combo_roles.blockSignals(True)
+            self.ui.combo_roles.setCurrentIndex(0)
+            self.ui.combo_roles.blockSignals(False)
+        self._clear_gauge_box_widget()
+        self._remove_gauge_overlay()
+        self._remove_gauge_list_item()
         self._sync_specimen_controls_from_session()
         results_controller = self.context.controllers.get("results")
         if results_controller is not None and hasattr(results_controller, "sync_active_scalar_from_session"):
             results_controller.sync_active_scalar_from_session()
+
+    def _enable_surface_picking(self) -> None:
+        if self.widgets.plotter is None or getattr(self, "_preview_mesh", None) is None:
+            return
+        try:
+            self.widgets.plotter.disable_picking()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.widgets.plotter.enable_element_picking(
+                callback=self.on_cell_picked,
+                mode="cell",
+                left_clicking=True,
+                show=False,
+                show_message=False,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _disable_surface_picking(self) -> None:
+        if self.widgets.plotter is None:
+            return
+        try:
+            self.widgets.plotter.disable_picking()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _clear_gauge_box_widget(self) -> None:
+        if self.widgets.plotter is None:
+            return
+        try:
+            self.widgets.plotter.clear_box_widgets()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _render_gauge_overlay(self, bounds: list[float]) -> None:
+        if self.widgets.plotter is None:
+            return
+        try:
+            box_mesh = pv.Box(bounds=bounds)
+            self.widgets.plotter.add_mesh(
+                box_mesh,
+                name=GAUGE_OVERLAY_ACTOR_NAME,
+                color="orange",
+                opacity=0.25,
+                show_edges=True,
+                edge_color="darkorange",
+                pickable=False,
+                reset_camera=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARNING] Could not render gauge overlay: {exc}")
+
+    def _remove_gauge_overlay(self) -> None:
+        if self.widgets.plotter is None:
+            return
+        try:
+            self.widgets.plotter.remove_actor(GAUGE_OVERLAY_ACTOR_NAME)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _activate_gauge_box_widget(self) -> None:
+        preview_mesh = getattr(self, "_preview_mesh", None)
+        if self.widgets.plotter is None or preview_mesh is None:
+            return
+        self._clear_gauge_box_widget()
+        init_bounds = compute_initial_gauge_bounds(
+            preview_mesh.bounds,
+            existing_bounds=self.session.gauge_bounds,
+        )
+        self._pending_gauge_bounds = list(init_bounds)
+        self._suppress_initial_box_callback = True
+        try:
+            self.widgets.plotter.add_box_widget(
+                callback=self._on_gauge_box_updated,
+                bounds=init_bounds,
+                factor=1.0,
+                rotation_enabled=False,
+                color="orange",
+            )
+        finally:
+            self._suppress_initial_box_callback = False
+
+    def _format_gauge_list_text(self, bounds: list[float]) -> str:
+        return (
+            f"{GAUGE_ROLE_NAME}: "
+            f"[{bounds[0]:.2f}, {bounds[1]:.2f}] x "
+            f"[{bounds[2]:.2f}, {bounds[3]:.2f}] x "
+            f"[{bounds[4]:.2f}, {bounds[5]:.2f}]"
+        )
+
+    def _upsert_gauge_list_item(self, bounds: list[float]) -> None:
+        if not hasattr(self.ui, "list_roles"):
+            return
+        text = self._format_gauge_list_text(bounds)
+        for idx in range(self.ui.list_roles.count()):
+            item = self.ui.list_roles.item(idx)
+            if item is not None and item.data(Qt.UserRole) == GAUGE_LIST_ITEM_TAG:
+                item.setText(text)
+                return
+        item = QListWidgetItem(text)
+        item.setData(Qt.UserRole, GAUGE_LIST_ITEM_TAG)
+        self.ui.list_roles.addItem(item)
+
+    def _remove_gauge_list_item(self) -> None:
+        if not hasattr(self.ui, "list_roles"):
+            return
+        for idx in range(self.ui.list_roles.count() - 1, -1, -1):
+            item = self.ui.list_roles.item(idx)
+            if item is not None and item.data(Qt.UserRole) == GAUGE_LIST_ITEM_TAG:
+                self.ui.list_roles.takeItem(idx)
+
+    def clear_gauge_volume(self) -> None:
+        self.session.gauge_bounds = None
+        self._pending_gauge_bounds = None
+        self._remove_gauge_overlay()
+        self._remove_gauge_list_item()
+        if self._gauge_selection_mode and getattr(self, "_preview_mesh", None) is not None:
+            self._activate_gauge_box_widget()
+        print("[SetupController] Gauge volume cleared.")
+
+    def _on_roles_delete_pressed(self) -> None:
+        if not hasattr(self.ui, "list_roles"):
+            return
+        current_item = self.ui.list_roles.currentItem()
+        if current_item is not None and current_item.data(Qt.UserRole) == GAUGE_LIST_ITEM_TAG:
+            self.clear_gauge_volume()
+
+    def _on_roles_context_menu(self, pos) -> None:
+        if not hasattr(self.ui, "list_roles"):
+            return
+        item = self.ui.list_roles.itemAt(pos)
+        is_gauge_item = item is not None and item.data(Qt.UserRole) == GAUGE_LIST_ITEM_TAG
+        if not is_gauge_item and self.session.gauge_bounds is None:
+            return
+        menu = QMenu(self.ui.list_roles)
+        clear_action = menu.addAction("Clear Gauge Volume")
+        clear_action.triggered.connect(self.clear_gauge_volume)
+        menu.exec(self.ui.list_roles.mapToGlobal(pos))
+
+    def _on_role_selection_changed(self, role_text: str) -> None:
+        self._gauge_selection_mode = (role_text == GAUGE_ROLE_NAME)
+        if self._gauge_selection_mode:
+            self._disable_surface_picking()
+            if getattr(self, "_preview_mesh", None) is not None:
+                self._activate_gauge_box_widget()
+        else:
+            self._clear_gauge_box_widget()
+            if getattr(self, "_preview_mesh", None) is not None:
+                self._enable_surface_picking()
+
+    def _on_gauge_box_updated(self, box_polydata) -> None:
+        if getattr(self, "_suppress_initial_box_callback", False):
+            return
+        if box_polydata is None or not hasattr(box_polydata, "bounds"):
+            return
+        bounds = self.session.set_gauge_bounds(list(box_polydata.bounds))
+        self._pending_gauge_bounds = list(bounds)
+        self._render_gauge_overlay(bounds)
+        self._upsert_gauge_list_item(bounds)
+        print(f"[SetupController] Gauge bounds updated: {bounds}")
 
     def _on_specimen_type_changed(self, text: str) -> None:
         self.session.specimen_type = text
@@ -389,6 +594,7 @@ class SetupController(BaseController):
             df_step=self.session.df_step,
             semantic_roles=self.session.semantic_roles,
             input_amplitude=self.session.input_amplitude,
+            gauge_bounds=list(self.session.gauge_bounds) if self.session.gauge_bounds is not None else None,
         )
         self.session.worker.progress_updated.connect(analytics._set_progress_value)
         self.session.worker.status_updated.connect(analytics._set_status_text)
@@ -507,6 +713,7 @@ class SetupController(BaseController):
                 self.ui.lbl_info.setText("3D setup viewport unavailable (OpenGL init failed).")
             return
 
+        self._clear_gauge_box_widget()
         try:
             self.widgets.plotter.disable_picking()
         except Exception:  # noqa: BLE001
@@ -534,15 +741,16 @@ class SetupController(BaseController):
             opacity=0.92,
             smooth_shading=True,
         )
-        self.widgets.plotter.enable_element_picking(
-            callback=self.on_cell_picked,
-            mode="cell",
-            left_clicking=True,
-            show=False,
-            show_message=False,
-        )
+        if self.session.gauge_bounds is not None:
+            self._render_gauge_overlay(self.session.gauge_bounds)
+        if getattr(self, "_gauge_selection_mode", False):
+            self._activate_gauge_box_widget()
+        else:
+            self._enable_surface_picking()
 
     def on_cell_picked(self, cell):
+        if getattr(self, "_gauge_selection_mode", False):
+            return
         if cell is None:
             return
 
@@ -606,6 +814,23 @@ class SetupController(BaseController):
         )
 
     def assign_role(self):
+        role_name = self.ui.combo_roles.currentText() if hasattr(self.ui, "combo_roles") else "Role"
+        if role_name == GAUGE_ROLE_NAME:
+            candidate_bounds = self.session.gauge_bounds or self._pending_gauge_bounds
+            if candidate_bounds is None:
+                QMessageBox.warning(
+                    self.main_window,
+                    "No Gauge Volume",
+                    "Load a 3D preview geometry and adjust the gauge box first.",
+                )
+                return
+            bounds = self.session.set_gauge_bounds(candidate_bounds)
+            self._pending_gauge_bounds = list(bounds)
+            self._render_gauge_overlay(bounds)
+            self._upsert_gauge_list_item(bounds)
+            print(f"[SetupController] Gauge bounds updated: {bounds}")
+            return
+
         if self.session.last_picked_info is None:
             QMessageBox.warning(
                 self.main_window,
@@ -615,7 +840,6 @@ class SetupController(BaseController):
             return
 
         centroid = self.session.last_picked_info["centroid"]
-        role_name = self.ui.combo_roles.currentText() if hasattr(self.ui, "combo_roles") else "Role"
         self.session.semantic_roles[role_name] = self.session.last_picked_info.copy()
 
         if hasattr(self.ui, "list_roles"):

@@ -208,6 +208,11 @@
                  <string>Base - &quot;YMIN&quot;</string>
                 </property>
                </item>
+               <item>
+                <property name="text">
+                 <string>Gauge Section (Stress Harvesting)</string>
+                </property>
+               </item>
               </widget>
              </item>
              <item>
